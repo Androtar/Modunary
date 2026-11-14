@@ -1456,9 +1456,9 @@ export default function App() {
                               fontWeight: 600,
                             }}
                           >
-                            Click Manual / Slow Download only in the Nexus window (never Vortex
-                            / Mod Manager / nxm). Complete timer/CAPTCHA yourself — Modunary
-                            imports the ZIP from Downloads.
+                            Modunary auto-clicks Manual / Slow Download (never Vortex). Only
+                            intervene for CAPTCHA or an active timer — then archives import from
+                            Downloads (.zip / .7z / .rar).
                           </div>
                         )}
                         {collectionProgress.currentModName && (

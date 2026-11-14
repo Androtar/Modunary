@@ -199,7 +199,11 @@ export function deleteProfile(id: string): AppStore {
 
 export function updateProfile(
   id: string,
-  patch: Partial<Pick<ModProfile, 'gameVersion' | 'steamBetaBranch' | 'mods' | 'settings'>>,
+  patch: Partial<
+    Pick<ModProfile, 'gameVersion' | 'steamBetaBranch' | 'mods'> & {
+      settings: Partial<ProfileSettings>
+    }
+  >,
 ): ModProfile {
   const store = loadStore()
   const profile = store.profiles.find((p) => p.id === id)
@@ -209,7 +213,7 @@ export function updateProfile(
   if (patch.steamBetaBranch != null) profile.steamBetaBranch = patch.steamBetaBranch
   if (patch.mods != null) profile.mods = patch.mods
   if (patch.settings != null) {
-    profile.settings = { ...profile.settings, ...patch.settings } as ProfileSettings
+    profile.settings = { ...profile.settings, ...patch.settings }
   }
   profile.updatedAt = nowIso()
   saveStore(store)

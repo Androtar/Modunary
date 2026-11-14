@@ -229,7 +229,13 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<{
         }
       }
 
-      // 1) Prefer Slow Download (free-user interstitial)
+      const clickEl = (el, outline) => {
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        el.style.outline = outline;
+        el.click();
+      };
+
+      // 1) Prefer Slow Download (free-user interstitial) — auto-click when enabled
       const slow = all.find(el => /slow\\s*download/i.test(textOf(el)) && !isVortexish(el));
       if (slow) {
         const disabled = slow.disabled || slow.getAttribute('aria-disabled') === 'true' || /\\bdisabled\\b/i.test(slow.className || '');
@@ -237,15 +243,13 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<{
         if (disabled || /\\d+\\s*s(ec)?/i.test(label) || /please wait/i.test(label)) {
           slow.scrollIntoView({ block: 'center', behavior: 'smooth' });
           slow.style.outline = '3px solid #c9a227';
-          return { status: 'waiting-timer', detail: 'Slow Download timer active — wait, then click when enabled (not Vortex).' };
+          return { status: 'waiting-timer', detail: 'Slow Download timer — waiting to auto-click when it enables (or click yourself).' };
         }
-        slow.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        slow.style.outline = '3px solid #6f9e6a';
-        slow.click();
-        return { status: 'clicked-slow', detail: 'Clicked Slow Download (manual path).' };
+        clickEl(slow, '3px solid #6f9e6a');
+        return { status: 'clicked-slow', detail: 'Auto-clicked Slow Download.' };
       }
 
-      // 2) Manual / MANUAL download (opens Slow Download for free users) — never Mod Manager
+      // 2) Manual / MANUAL (opens Slow Download for free users) — never Mod Manager / Vortex
       const manual = all.find(el => {
         if (isVortexish(el)) return false;
         const t = textOf(el);
@@ -254,25 +258,36 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<{
         return /^(manual(\\s*download)?|download\\s*manually)$/i.test(t) || /^manual$/i.test(t);
       });
       if (manual) {
-        manual.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        manual.style.outline = '3px solid #c9a227';
-        manual.click();
-        return { status: 'clicked-manual', detail: 'Clicked Manual Download — look for Slow Download next (not Vortex).' };
+        clickEl(manual, '3px solid #c9a227');
+        return { status: 'clicked-manual', detail: 'Auto-clicked Manual Download — will auto-click Slow Download next.' };
       }
 
-      // Explicitly ignore Vortex buttons so we do not "succeed" by opening nxm
+      // 3) On DownloadPopUp, a lone non-Vortex "Download" / "Free" control (not Mod Manager)
+      const freeDl = all.find(el => {
+        if (isVortexish(el)) return false;
+        const t = textOf(el);
+        const h = hrefOf(el);
+        if (/[?&]nmm=1(?:&|$)/i.test(h) || /nxm:/i.test(h)) return false;
+        return /^(download|free|start\\s*download|download\\s*now)$/i.test(t);
+      });
+      if (freeDl && /DownloadPopUp|file_id=|nmm=0/i.test(location.href + location.search)) {
+        clickEl(freeDl, '3px solid #6f9e6a');
+        return { status: 'clicked-slow', detail: 'Auto-clicked Download on Manual popup.' };
+      }
+
+      // Vortex present but no Manual yet — do not click it; keep searching
       const vortexBtn = all.find(el => isVortexish(el));
       if (vortexBtn) {
         vortexBtn.style.outline = '3px solid #a33';
         return {
           status: 'blocked-vortex',
-          detail: 'Vortex / Mod Manager Download is visible — do not use it. Click Manual or Slow Download only.',
+          detail: 'Ignoring Vortex / Mod Manager — still looking for Manual / Slow Download to auto-click.',
         };
       }
 
       return {
         status: 'not-found',
-        detail: 'Slow/Manual Download not found yet — open Files, click Manual Download, then Slow Download (never Vortex).',
+        detail: 'Looking for Manual / Slow Download to auto-click…',
       };
     })()`) ) as {
       status:

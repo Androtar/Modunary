@@ -5,7 +5,7 @@ import type {
   NexusCollectionInfoDto,
 } from '../types'
 import { downloadUrlToVault, importZipToVault } from './installMod'
-import { addModulesToProfile } from './profiles'
+import { addModulesToProfile, updateProfile } from './profiles'
 import { getNexusDownloadLink, listNexusFiles, validateNexusKey } from './stores/nexus'
 import {
   resolveNexusCollection,
@@ -266,6 +266,7 @@ async function manualSlowDownloadInstall(
   skipped?: boolean
   modules?: Array<{ folderName: string; id: string; name: string; version: string }>
   error?: string
+  kind?: 'module' | 'blse'
 }> {
   if (!session) return { ok: false, error: 'No session.' }
   const item = session.items[session.index]
@@ -277,7 +278,7 @@ async function manualSlowDownloadInstall(
       : modFilesUrl(domain, mod.modId, mod.fileId)
 
   item.status = 'waiting-user'
-  item.message = `ACTION NEEDED: Click Slow Download for “${mod.name}” (Manual only — never Vortex). Watching Downloads…`
+  item.message = `Auto-clicking Manual / Slow Download for “${mod.name}” (never Vortex)…`
   emit({ stage: 'waiting-download', message: item.message })
 
   const win = ensureBrowser(parent)
@@ -288,57 +289,74 @@ async function manualSlowDownloadInstall(
   await loadUrl(win, url)
   await injectNexusGuideBanner(
     win,
-    `Modunary: Use Manual / Slow Download for ${mod.name} — never Vortex or Mod Manager. Complete timer/CAPTCHA yourself; ZIP imports from Downloads.`,
+    `Modunary: Auto-clicking Manual / Slow Download for ${mod.name}. Only intervene for CAPTCHA/timer. Never Vortex.`,
   )
 
-  // Assist: Manual + Slow Download only (never Vortex/nxm).
+  const needsUser = (status: string) =>
+    status === 'captcha' || status === 'waiting-timer' || status === 'login'
+
+  // Assist: auto-click Manual + Slow Download (never Vortex/nxm). Prompt only for CAPTCHA/timer/login.
   let lastAssist = ''
-  const assistDeadline = Date.now() + 45_000
+  let userPromptActive = false
+  const assistDeadline = Date.now() + 90_000
   while (Date.now() < assistDeadline) {
     if (session.cancelled) return { ok: false, error: 'Cancelled.' }
     if (session.skipCurrent) return { ok: false, skipped: true }
     const blocked = takeLastBlockedProtocol(sinceMs)
     if (blocked) {
-      lastAssist = `Blocked Vortex/nxm (${blocked.slice(0, 64)}…)`
-      item.message = `ACTION NEEDED: ${lastAssist}. Click Slow Download only.`
+      lastAssist = `Blocked Vortex/nxm (${blocked.slice(0, 64)}…) — still auto-clicking Manual/Slow.`
+      item.message = lastAssist
       emit({ stage: 'waiting-download', message: item.message })
     }
     const assist = await tryAssistSlowDownload(win)
     lastAssist = assist.detail
     await injectNexusGuideBanner(win, `Modunary: ${assist.detail}`)
-    if (assist.status === 'captcha' || assist.status === 'login' || assist.status === 'waiting-timer') {
+
+    if (needsUser(assist.status)) {
+      userPromptActive = true
       item.message = `ACTION NEEDED: ${assist.detail}`
       emit({ stage: 'waiting-download', message: item.message })
-      if (assist.status === 'captcha' || assist.status === 'waiting-timer') break
+      if (assist.status === 'captcha') {
+        // Stay on page; user must solve — keep polling after they do
+        await new Promise((r) => setTimeout(r, 2000))
+        continue
+      }
+      if (assist.status === 'waiting-timer') {
+        // Keep polling so we auto-click the moment the timer enables Slow Download
+        await new Promise((r) => setTimeout(r, 1000))
+        continue
+      }
       if (assist.status === 'login') {
         await new Promise((r) => setTimeout(r, 2000))
         continue
       }
     }
+
     if (assist.status === 'clicked-slow') {
-      item.message = 'Slow Download clicked — waiting for ZIP in Downloads…'
+      userPromptActive = false
+      item.message = 'Slow Download auto-clicked — waiting for archive in Downloads…'
       emit({ stage: 'waiting-download', message: item.message })
       break
     }
     if (assist.status === 'clicked-manual') {
-      item.message =
-        'ACTION NEEDED: Manual Download opened — click Slow Download (not Vortex; complete timer/CAPTCHA if shown).'
+      userPromptActive = false
+      item.message = 'Manual Download auto-clicked — auto-clicking Slow Download next…'
       emit({ stage: 'waiting-download', message: item.message })
-      await new Promise((r) => setTimeout(r, 1200))
+      await new Promise((r) => setTimeout(r, 900))
       continue
     }
-    if (assist.status === 'blocked-vortex') {
-      item.message = `ACTION NEEDED: ${assist.detail}`
+    if (assist.status === 'blocked-vortex' || assist.status === 'not-found') {
+      item.message = assist.detail
       emit({ stage: 'waiting-download', message: item.message })
-      await new Promise((r) => setTimeout(r, 1500))
+      await new Promise((r) => setTimeout(r, 900))
       continue
     }
-    item.message = `ACTION NEEDED: ${assist.detail}`
+    item.message = assist.detail
     emit({ stage: 'waiting-download', message: item.message })
-    await new Promise((r) => setTimeout(r, 1500))
+    await new Promise((r) => setTimeout(r, 900))
   }
 
-  // Watch Downloads folder + Electron will-download; keep assisting Slow Download.
+  // Watch Downloads folder + Electron will-download; keep auto-clicking Slow Download.
   let stopAssist = false
   let electronHit: { path: string; name: string } | null = null
 
@@ -355,33 +373,31 @@ async function manualSlowDownloadInstall(
       if (session?.browser && !session.browser.isDestroyed()) {
         const assist = await tryAssistSlowDownload(session.browser)
         lastAssist = assist.detail
-        if (
-          assist.status === 'captcha' ||
-          assist.status === 'waiting-timer' ||
-          assist.status === 'not-found' ||
-          assist.status === 'clicked-manual' ||
-          assist.status === 'blocked-vortex'
-        ) {
+        if (needsUser(assist.status)) {
+          userPromptActive = true
           const msg = `ACTION NEEDED: ${assist.detail}`
           item.message = msg
           emit({ stage: 'waiting-download', message: msg })
           void injectNexusGuideBanner(session.browser, msg)
         } else if (assist.status === 'clicked-slow') {
-          item.message = 'Slow Download clicked — waiting for ZIP in Downloads…'
+          userPromptActive = false
+          item.message = 'Slow Download auto-clicked — waiting for archive in Downloads…'
+          emit({ stage: 'waiting-download', message: item.message })
+        } else if (assist.status === 'clicked-manual') {
+          item.message = 'Manual Download auto-clicked — continuing…'
           emit({ stage: 'waiting-download', message: item.message })
         }
       }
-      await new Promise((r) => setTimeout(r, 2500))
+      await new Promise((r) => setTimeout(r, 1200))
     }
   })()
 
   const folderResult = await waitForNewDownload({
     sinceMs,
     timeoutMs: 20 * 60 * 1000,
-    nameHints: [String(mod.modId), mod.name.slice(0, 24)],
+    nameHints: [String(mod.modId), mod.name.slice(0, 24), 'BLSE', 'Bannerlord'],
     signal: {
       get cancelled() {
-        // Stop folder watch when will-download completed or user cancelled.
         return Boolean(session?.cancelled) || Boolean(electronHit)
       },
       get skipped() {
@@ -392,11 +408,16 @@ async function manualSlowDownloadInstall(
       if (!session || stopAssist) return
       const cur = session.items[session.index]
       const active = getActiveNexusDownloadPath()
-      const text = active
-        ? `Downloading to ${active}…`
-        : message.includes('Waiting for a new ZIP')
-          ? `ACTION NEEDED: Click Slow Download for “${mod.name}”. ${lastAssist || ''} Watching ${getDownloadsPath()}…`
-          : message
+      let text: string
+      if (active) {
+        text = `Downloading to ${active}…`
+      } else if (userPromptActive) {
+        text = `ACTION NEEDED: ${lastAssist || 'Complete CAPTCHA/timer, then Slow Download.'}`
+      } else if (message.includes('Waiting for a new ZIP')) {
+        text = `Auto-clicking Manual/Slow Download for “${mod.name}”… Watching ${getDownloadsPath()}…`
+      } else {
+        text = message
+      }
       if (cur) cur.message = text
       emit({ stage: 'waiting-download', message: text })
       void injectNexusGuideBanner(win, text.startsWith('ACTION') ? text : `Modunary: ${text}`)
@@ -416,7 +437,7 @@ async function manualSlowDownloadInstall(
     emit({ stage: 'installing', message: item.message })
     const imported = await importZipToVault(archive.path)
     if (!imported.ok) return { ok: false, error: imported.error }
-    return { ok: true, modules: imported.modules }
+    return { ok: true, modules: imported.modules, kind: imported.kind }
   }
 
   if (folderResult.skipped || session?.skipCurrent) return { ok: false, skipped: true }
@@ -424,7 +445,7 @@ async function manualSlowDownloadInstall(
     ok: false,
     error:
       folderResult.error ||
-      `Timed out waiting for Slow Download ZIP. Last guide: ${lastAssist || 'none'}`,
+      `Timed out waiting for Slow Download archive. Last guide: ${lastAssist || 'none'}`,
   }
 }
 
@@ -465,7 +486,26 @@ async function installOne(
     item.message = 'Skipped'
     return
   }
-  if (!manual.ok || !manual.modules) {
+  if (!manual.ok) {
+    item.status = 'error'
+    item.error = manual.error || 'Manual install failed'
+    item.message = item.error
+    return
+  }
+  if (manual.kind === 'blse') {
+    try {
+      updateProfile(session.profileId, {
+        settings: { requiresBlse: true, preferredLauncher: 'blse' },
+      })
+    } catch {
+      // profile update is best-effort
+    }
+    item.status = 'done'
+    item.message = 'BLSE installed into game bin/ (Slow Download + 7z)'
+    item.method = 'slow-download'
+    return
+  }
+  if (!manual.modules) {
     item.status = 'error'
     item.error = manual.error || 'Manual install failed'
     item.message = item.error
