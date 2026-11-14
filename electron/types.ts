@@ -116,6 +116,75 @@ export interface StoreSearchResponse {
   manualUrl?: string
 }
 
+export type CollectionInstallItemStatus =
+  | 'pending'
+  | 'downloading'
+  | 'waiting-user'
+  | 'importing'
+  | 'done'
+  | 'skipped'
+  | 'error'
+
+export interface CollectionInstallItem {
+  modId: number
+  fileId: number
+  name: string
+  version: string
+  optional: boolean
+  status: CollectionInstallItemStatus
+  message: string
+  error: string | null
+  method: 'premium' | 'slow-download' | null
+}
+
+export type CollectionInstallStage =
+  | 'idle'
+  | 'resolving'
+  | 'installing'
+  | 'waiting-download'
+  | 'paused'
+  | 'done'
+  | 'cancelled'
+
+export interface CollectionInstallProgress {
+  active: boolean
+  stage: CollectionInstallStage
+  collectionName: string | null
+  collectionUrl: string | null
+  profileId: string | null
+  total: number
+  completed: number
+  index: number
+  currentModId: string | null
+  currentModName: string | null
+  message: string
+  items: CollectionInstallItem[]
+  downloadsPath: string | null
+  error: string | null
+}
+
+export interface NexusCollectionModDto {
+  modId: number
+  fileId: number
+  name: string
+  version: string
+  optional: boolean
+  author?: string
+  url: string
+}
+
+export interface NexusCollectionInfoDto {
+  slug: string
+  domain: string
+  name: string
+  revision: number
+  summary?: string
+  url: string
+  mods: NexusCollectionModDto[]
+  source: 'graphql' | 'scrape'
+  notes: string[]
+}
+
 export interface AppStore {
   version: 2
   activeProfileId: string | null

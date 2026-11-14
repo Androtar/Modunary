@@ -5,11 +5,13 @@ import type {
   ActivateProgressEvent,
   ActivateResult,
   AppStore,
+  CollectionInstallProgress,
   CreateProfileInput,
   GameDiscovery,
   LaunchResult,
   LoadOrderScanResult,
   ModProfile,
+  NexusCollectionInfoDto,
   SecretsStatus,
   SteamVersionOption,
   StoreSearchResponse,
@@ -79,6 +81,20 @@ export interface BannerlordApi {
     needsPremium?: boolean
     imported?: { ok: boolean; modules: unknown[]; error?: string }
   }>
+  resolveNexusCollection: (
+    url: string,
+  ) => Promise<{ ok: boolean; collection?: NexusCollectionInfoDto; error?: string }>
+  startCollectionInstall: (
+    profileId: string,
+    collectionUrl: string,
+    options?: { includeOptional?: boolean },
+  ) => Promise<{ ok: boolean; collection?: NexusCollectionInfoDto; error?: string }>
+  skipCollectionMod: () => Promise<CollectionInstallProgress | null>
+  retryCollectionMod: () => Promise<CollectionInstallProgress | null>
+  cancelCollectionInstall: () => Promise<CollectionInstallProgress | null>
+  getCollectionProgress: () => Promise<CollectionInstallProgress | null>
+  onCollectionProgress: (handler: (progress: CollectionInstallProgress) => void) => () => void
+  openDownloadsFolder: () => Promise<void>
   openSteamWorkshop: (id: string) => Promise<void>
   workshopInfo: () => Promise<{ path: string | null; note: string }>
   importWorkshop: (
@@ -156,6 +172,19 @@ const api: BannerlordApi = {
   listNexusFiles: (modId) => ipcRenderer.invoke('stores:nexusFiles', modId),
   downloadNexusFile: (modId, fileId) =>
     ipcRenderer.invoke('stores:nexusDownload', modId, fileId),
+  resolveNexusCollection: (url) => ipcRenderer.invoke('nexus:resolveCollection', url),
+  startCollectionInstall: (profileId, collectionUrl, options) =>
+    ipcRenderer.invoke('nexus:startCollectionInstall', profileId, collectionUrl, options),
+  skipCollectionMod: () => ipcRenderer.invoke('nexus:collectionSkip'),
+  retryCollectionMod: () => ipcRenderer.invoke('nexus:collectionRetry'),
+  cancelCollectionInstall: () => ipcRenderer.invoke('nexus:collectionCancel'),
+  getCollectionProgress: () => ipcRenderer.invoke('nexus:collectionProgress'),
+  onCollectionProgress: (handler) => {
+    const listener = (_event: unknown, data: CollectionInstallProgress) => handler(data)
+    ipcRenderer.on('nexus:collectionProgress', listener)
+    return () => ipcRenderer.removeListener('nexus:collectionProgress', listener)
+  },
+  openDownloadsFolder: () => ipcRenderer.invoke('nexus:openDownloads'),
   openSteamWorkshop: (id) => ipcRenderer.invoke('stores:steamOpen', id),
   workshopInfo: () => ipcRenderer.invoke('stores:workshopInfo'),
   importWorkshop: (publishedFileId) =>

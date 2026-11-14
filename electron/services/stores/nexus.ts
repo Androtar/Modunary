@@ -3,8 +3,8 @@ import { getSecrets } from '../secrets'
 
 const NEXUS_BASE = 'https://api.nexusmods.com/v1'
 const GAME = 'mountandblade2bannerlord'
-const APP_NAME = 'BannerlordModProfiles'
-const APP_VERSION = '0.2.0'
+const APP_NAME = 'Modunary'
+const APP_VERSION = '0.3.0'
 
 function headers(apiKey: string): Record<string, string> {
   return {

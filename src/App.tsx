@@ -5,6 +5,7 @@ import type {
   ActivateProgressPhase,
   ActivateResult,
   AppStore,
+  CollectionInstallProgress,
   GameDiscovery,
   ModProfile,
   SecretsStatus,
@@ -76,6 +77,11 @@ export default function App() {
   const [storeResults, setStoreResults] = useState<StoreSearchResult[]>([])
   const [storeError, setStoreError] = useState<string | null>(null)
   const [storeManualUrl, setStoreManualUrl] = useState<string | null>(null)
+  const [collectionUrl, setCollectionUrl] = useState('')
+  const [collectionIncludeOptional, setCollectionIncludeOptional] = useState(false)
+  const [collectionProgress, setCollectionProgress] = useState<CollectionInstallProgress | null>(
+    null,
+  )
 
   // Electron does not support window.prompt / window.confirm — use in-app modals.
   const [nameModal, setNameModal] = useState<{
@@ -736,6 +742,45 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!window.bannerlord?.onCollectionProgress) return
+    const unsub = window.bannerlord.onCollectionProgress((p) => {
+      setCollectionProgress(p)
+      if (p.stage === 'done' || p.stage === 'cancelled') {
+        void refresh()
+      }
+    })
+    void window.bannerlord.getCollectionProgress().then((p) => {
+      if (p) setCollectionProgress(p)
+    })
+    return unsub
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function onInstallCollection() {
+    if (!selected) {
+      setMessage({ kind: 'warn', text: 'Select a profile before installing a Collection.' })
+      return
+    }
+    const url = collectionUrl.trim()
+    if (!url) {
+      setMessage({ kind: 'warn', text: 'Paste a Nexus Collection URL first.' })
+      return
+    }
+    setMessage(null)
+    const res = await window.bannerlord.startCollectionInstall(selected.id, url, {
+      includeOptional: collectionIncludeOptional,
+    })
+    if (!res.ok) {
+      setMessage({ kind: 'error', text: res.error || 'Collection install failed to start.' })
+      return
+    }
+    setMessage({
+      kind: 'ok',
+      text: `Installing Collection “${res.collection?.name || url}” (${res.collection?.mods.length ?? '?'} mods). Premium CDN when available; otherwise Slow Download — complete timer/CAPTCHA yourself.`,
+    })
+  }
+
+  useEffect(() => {
     if (!window.bannerlord?.onUiCommand) return
     return window.bannerlord.onUiCommand((command) => {
       if (command === 'newProfile') void openCreateModal()
@@ -1284,7 +1329,9 @@ export default function App() {
                 <h2>Mod stores</h2>
                 <p className="sub">
                   Search Steam Workshop, Nexus Mods, and ModDB. Keys live in encrypted app secrets
-                  (or env vars). Downloads that need Premium/manual steps open the browser.
+                  (or env vars). Hybrid Collection install: Premium CDN when available, otherwise
+                  in-app Nexus window + Slow Download (you complete timer/CAPTCHA) + Downloads
+                  folder watch.
                 </p>
 
                 <div className="toolbar-group" style={{ marginBottom: '0.75rem' }}>
@@ -1298,6 +1345,130 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+
+                {storeKind === 'nexus' && (
+                  <div className="collection-install" style={{ marginBottom: '1rem' }}>
+                    <h2 style={{ marginTop: 0, fontSize: '1.05rem' }}>Nexus Collection (hybrid)</h2>
+                    <p className="sub">
+                      Paste a Collection URL. API key recommended; Premium optional. No CAPTCHA
+                      bypass — click Slow Download yourself when prompted.
+                    </p>
+                    <div className="path-row" style={{ marginBottom: '0.55rem' }}>
+                      <input
+                        value={collectionUrl}
+                        onChange={(e) => setCollectionUrl(e.target.value)}
+                        placeholder="https://next.nexusmods.com/mountandblade2bannerlord/collections/…"
+                        disabled={Boolean(collectionProgress?.active)}
+                      />
+                      <button
+                        className="btn primary"
+                        disabled={busy || !selected || Boolean(collectionProgress?.active)}
+                        onClick={() => void onInstallCollection()}
+                      >
+                        Install Collection
+                      </button>
+                    </div>
+                    <label className="check-row" style={{ paddingTop: 0, marginBottom: '0.55rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={collectionIncludeOptional}
+                        disabled={Boolean(collectionProgress?.active)}
+                        onChange={(e) => setCollectionIncludeOptional(e.target.checked)}
+                      />
+                      Include optional Collection mods
+                    </label>
+                    {collectionProgress && (
+                      <div className="callout" style={{ marginBottom: '0.55rem' }}>
+                        <div>
+                          <strong>
+                            {collectionProgress.collectionName || 'Collection'} —{' '}
+                            {collectionProgress.stage}
+                          </strong>
+                        </div>
+                        <div className="sub" style={{ margin: '0.25rem 0' }}>
+                          {collectionProgress.completed}/{collectionProgress.total} ·{' '}
+                          {collectionProgress.message}
+                        </div>
+                        {collectionProgress.currentModName && (
+                          <div>
+                            Current: {collectionProgress.currentModName}
+                            {collectionProgress.stage === 'waiting-download'
+                              ? ' (Slow Download — complete timer/CAPTCHA in the Nexus window)'
+                              : ''}
+                          </div>
+                        )}
+                        <div className="toolbar-group" style={{ marginTop: '0.55rem' }}>
+                          <button
+                            className="btn"
+                            disabled={!collectionProgress.active}
+                            onClick={() => void window.bannerlord.skipCollectionMod()}
+                          >
+                            Skip mod
+                          </button>
+                          <button
+                            className="btn"
+                            disabled={
+                              !collectionProgress.active ||
+                              collectionProgress.items[collectionProgress.index]?.status !== 'error'
+                            }
+                            onClick={() => void window.bannerlord.retryCollectionMod()}
+                          >
+                            Retry mod
+                          </button>
+                          <button
+                            className="btn danger"
+                            disabled={!collectionProgress.active}
+                            onClick={() => void window.bannerlord.cancelCollectionInstall()}
+                          >
+                            Cancel install
+                          </button>
+                          <button
+                            className="btn ghost"
+                            onClick={() => void window.bannerlord.openDownloadsFolder()}
+                          >
+                            Open Downloads
+                          </button>
+                        </div>
+                        <ul className="activate-progress" style={{ maxHeight: 220, overflow: 'auto' }}>
+                          {collectionProgress.items.map((item) => (
+                            <li
+                              key={item.modId}
+                              className={
+                                item.status === 'done'
+                                  ? 'done'
+                                  : item.status === 'error'
+                                    ? 'error'
+                                    : item.status === 'waiting-user' ||
+                                        item.status === 'downloading' ||
+                                        item.status === 'importing'
+                                      ? 'current'
+                                      : 'pending'
+                              }
+                            >
+                              <span className="activate-progress-mark" aria-hidden>
+                                {item.status === 'done'
+                                  ? '✓'
+                                  : item.status === 'skipped'
+                                    ? '–'
+                                    : item.status === 'error'
+                                      ? '!'
+                                      : '○'}
+                              </span>
+                              <span>
+                                {item.name}
+                                <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>
+                                  {item.status}
+                                  {item.method ? ` · ${item.method}` : ''}
+                                  {item.error ? ` — ${item.error}` : ''}
+                                </span>
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="path-row" style={{ marginBottom: '0.75rem' }}>
                   <input
@@ -1613,16 +1784,35 @@ export default function App() {
                 <p className="sub">
                   Stored via Electron safeStorage when available. Env fallbacks:{' '}
                   {secrets?.hooks.envNexus}, {secrets?.hooks.envSteam},{' '}
-                  {secrets?.hooks.envModdbUser}/{secrets?.hooks.envModdbPass}. Nexus SSO app id
-                  optional ({secrets?.hooks.envNexusAppId}) after Stephen registers the app on Nexus.
+                  {secrets?.hooks.envModdbUser}/{secrets?.hooks.envModdbPass}.
                 </p>
+                <div className="callout" style={{ marginBottom: '0.75rem' }}>
+                  Nexus API key: required for Collections / file lists (shows as set/missing below —
+                  value is never displayed). Premium is optional — without it Modunary uses Slow
+                  Download + Downloads watch. Application ID ({secrets?.hooks.envNexusAppId}) is
+                  optional for future SSO after you register the app on Nexus.
+                </div>
                 <div className="grid-2">
                   <SecretField
-                    label={`Nexus API key ${secrets?.nexusApiKeySet ? '(set)' : '(missing)'}`}
-                    placeholder="Paste Nexus API key"
+                    label={`Nexus API key ${secrets?.nexusApiKeySet ? '(set · masked)' : '(missing)'}`}
+                    placeholder={
+                      secrets?.nexusApiKeySet
+                        ? 'Key is set — paste a new key to replace'
+                        : 'Paste Nexus personal API key'
+                    }
+                    password
                     onSave={(v) =>
                       withBusy(async () => {
                         setSecrets(await window.bannerlord.setSecrets({ nexusApiKey: v }))
+                      })
+                    }
+                  />
+                  <SecretField
+                    label={`Nexus Application ID ${secrets?.nexusAppIdSet ? '(set)' : '(optional)'}`}
+                    placeholder="Optional — future Nexus SSO"
+                    onSave={(v) =>
+                      withBusy(async () => {
+                        setSecrets(await window.bannerlord.setSecrets({ nexusAppId: v }))
                       })
                     }
                   />
@@ -1665,7 +1855,7 @@ export default function App() {
                         setMessage({
                           kind: v.ok ? 'ok' : 'error',
                           text: v.ok
-                            ? `Nexus OK: ${v.name} (Premium: ${v.isPremium ? 'yes' : 'no'})`
+                            ? `Nexus OK: ${v.name} (Premium: ${v.isPremium ? 'yes' : 'no'} — optional for hybrid Collection install)`
                             : v.error || 'Nexus validate failed',
                         })
                       })

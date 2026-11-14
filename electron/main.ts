@@ -47,6 +47,16 @@ import {
   searchNexus,
   validateNexusKey,
 } from './services/stores/nexus'
+import { resolveNexusCollection } from './services/stores/nexusCollection'
+import {
+  cancelCollectionInstall,
+  getCollectionInstallProgress,
+  openDownloadsFolder,
+  retryCollectionMod,
+  skipCollectionMod,
+  startCollectionInstall,
+  subscribeCollectionInstall,
+} from './services/collectionInstall'
 import {
   getWorkshopPathInfo,
   openSteamWorkshopItem,
@@ -507,6 +517,57 @@ function registerIpc() {
     }),
   )
   ipcMain.handle(
+    'nexus:resolveCollection',
+    wrapIpc('nexus:resolveCollection', (_e, url: string) => resolveNexusCollection(url)),
+  )
+  ipcMain.handle(
+    'nexus:startCollectionInstall',
+    wrapIpc(
+      'nexus:startCollectionInstall',
+      async (
+        _e,
+        profileId: string,
+        collectionUrl: string,
+        options?: { includeOptional?: boolean },
+      ) =>
+        startCollectionInstall({
+          profileId,
+          collectionUrl,
+          includeOptional: options?.includeOptional,
+          parentWindow: mainWindow,
+        }),
+    ),
+  )
+  ipcMain.handle(
+    'nexus:collectionSkip',
+    wrapIpc('nexus:collectionSkip', () => {
+      skipCollectionMod()
+      return getCollectionInstallProgress()
+    }),
+  )
+  ipcMain.handle(
+    'nexus:collectionRetry',
+    wrapIpc('nexus:collectionRetry', () => {
+      retryCollectionMod()
+      return getCollectionInstallProgress()
+    }),
+  )
+  ipcMain.handle(
+    'nexus:collectionCancel',
+    wrapIpc('nexus:collectionCancel', () => {
+      cancelCollectionInstall()
+      return getCollectionInstallProgress()
+    }),
+  )
+  ipcMain.handle(
+    'nexus:collectionProgress',
+    wrapIpc('nexus:collectionProgress', () => getCollectionInstallProgress()),
+  )
+  ipcMain.handle(
+    'nexus:openDownloads',
+    wrapIpc('nexus:openDownloads', () => openDownloadsFolder()),
+  )
+  ipcMain.handle(
     'stores:steamOpen',
     wrapIpc('stores:steamOpen', (_e, id: string) => openSteamWorkshopItem(id)),
   )
@@ -579,6 +640,11 @@ app.whenReady().then(() => {
     buildAppMenu(lock)
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('activate:lock', lock)
+    }
+  })
+  subscribeCollectionInstall((progress) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('nexus:collectionProgress', progress)
     }
   })
   createWindow()
