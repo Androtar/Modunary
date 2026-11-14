@@ -29,6 +29,7 @@ let steamStatus: SteamBusyStatus = {
   betaKey: null,
   detectedVersion: null,
   userMessage: null,
+  reasons: [],
 }
 let monitorTimer: ReturnType<typeof setInterval> | null = null
 const listeners = new Set<Listener>()
@@ -56,6 +57,15 @@ function compose(): ActivateLockState {
       'Steam is installing/validating/updating Bannerlord'
   }
 
+  const steamDetail = steamStatus.detail || null
+  const tooltip = blocked
+    ? source === 'activate'
+      ? `Modunary activate in progress — ${activateOnly.message || 'wait until it finishes'}`
+      : source === 'steam'
+        ? `Steam busy: ${steamDetail || 'installing/validating/updating Bannerlord'}`
+        : `Activate in progress and Steam busy: ${steamDetail || 'updating'}`
+    : null
+
   return {
     active: blocked,
     blocked,
@@ -63,19 +73,20 @@ function compose(): ActivateLockState {
     profileId: activateOnly.profileId,
     profileName: activateOnly.profileName,
     phase: activateOnly.phase,
-    message,
+    message: blocked
+      ? message
+      : steamDetail
+        ? `Steam monitor: ${steamDetail}`
+        : null,
     startedAt: activateOnly.startedAt,
-    steamUpdatePending: steamBusy || activateOnly.phase === 'waiting-steam' || activateOnly.phase === 'installing-version',
+    steamUpdatePending:
+      steamBusy ||
+      activateOnly.phase === 'waiting-steam' ||
+      activateOnly.phase === 'installing-version',
     activateInProgress,
     steamBusy,
-    steamDetail: steamBusy ? steamStatus.detail : null,
-    tooltip: blocked
-      ? source === 'activate'
-        ? 'Modunary activate in progress — wait until it finishes'
-        : source === 'steam'
-          ? 'Steam is installing/validating/updating Bannerlord'
-          : 'Modunary activate in progress and Steam is updating Bannerlord'
-      : null,
+    steamDetail,
+    tooltip,
   }
 }
 

@@ -1134,6 +1134,13 @@ export default function App() {
           Mods on disk: {discovery?.mods.length ?? 0} · Vault: {vaultCount}
           {'\n'}
           BLSE: {discovery?.blse.installed ? 'installed' : 'not found'}
+          {'\n'}
+          Steam scan:{' '}
+          {activateLock?.steamBusy
+            ? `BUSY — ${activateLock.steamDetail || activateLock.message || 'updating'}`
+            : activateLock?.activateInProgress
+              ? `OK (activate running: ${activateLock.message || '…'})`
+              : `idle${activateLock?.steamDetail ? ` · ${activateLock.steamDetail}` : ''}`}
         </div>
       </aside>
 
@@ -1192,14 +1199,18 @@ export default function App() {
               </div>
             </div>
 
-            {activateLaunchBlocked && activateLock?.message && (
-              <div className="callout warn" title={activateLock.tooltip || undefined}>
-                {activateLock.source === 'steam' || activateLock.source === 'both'
-                  ? activateLock.message
-                  : activateLock.message}
-                {activateLock.steamDetail && activateLock.steamBusy
-                  ? `\nSteam: ${activateLock.steamDetail}`
-                  : ''}
+            {activateLaunchBlocked && (
+              <div className="callout warn" title={activateLock?.tooltip || undefined}>
+                {activateLock?.source === 'activate'
+                  ? `Activate in progress: ${activateLock.message || '…'}`
+                  : activateLock?.source === 'both'
+                    ? `Activate in progress and Steam busy`
+                    : 'Steam is busy with Bannerlord'}
+                {activateLock?.steamBusy && activateLock.steamDetail
+                  ? `\nWhy: ${activateLock.steamDetail}`
+                  : activateLock?.activateInProgress && activateLock.message
+                    ? `\nWhy: ${activateLock.message}`
+                    : ''}
                 {'\n'}
                 Activate and Launch stay disabled until Steam is idle and Modunary finishes.
               </div>
