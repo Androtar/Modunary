@@ -175,11 +175,129 @@ export async function injectNexusGuideBanner(
   }
 }
 
-/**
- * Try to click Slow Download / Manual Download only.
- * Never clicks Vortex / Mod Manager / nxm. Never solves CAPTCHA.
- */
-export async function tryAssistSlowDownload(win: BrowserWindow): Promise<{
+/** In-page finder/clicker. Runs inside each frame (DownloadPopUp is often cross-origin). */
+const SLOW_DOWNLOAD_ASSIST_SCRIPT = `(() => {
+  const textOf = (el) => ((el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.title || '') + '').replace(/\\s+/g, ' ').trim();
+  const ownText = (el) => {
+    let t = '';
+    for (const n of el.childNodes || []) {
+      if (n.nodeType === 3) t += n.textContent || '';
+    }
+    return t.replace(/\\s+/g, ' ').trim();
+  };
+  const hrefOf = (el) => {
+    const a = el.closest ? (el.closest('a') || el) : el;
+    return ((el.href || (a && a.href) || (el.getAttribute && el.getAttribute('href')) || '') + '').toLowerCase();
+  };
+  const isVortexish = (el) => {
+    const t = textOf(el);
+    const h = hrefOf(el);
+    if (/nxm:\\/\\//i.test(h) || /[?&]nmm=1(?:&|$)/i.test(h)) return true;
+    if (/^(vortex|mod\\s*manager(\\s*download)?|download with (vortex|manager)|nmm)$/i.test(t)) return true;
+    if (/\\b(vortex|nxm)\\b/i.test(t) && /download/i.test(t) && !/slow/i.test(t)) return true;
+    return false;
+  };
+  const isFastOrPremium = (t) => /fast\\s*download/i.test(t) || /^premium$/i.test(t);
+  const isSlowLabel = (t) => /^slow\\s*downloads?\\.?$/i.test((t || '').replace(/\\s+/g, ' ').trim());
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return false;
+    const st = window.getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+    return true;
+  };
+  const clickEl = (el) => {
+    const r = el.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch (_) {}
+    try { el.style.outline = '3px solid #6f9e6a'; el.style.outlineOffset = '2px'; } catch (_) {}
+    const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 };
+    for (const type of ['pointerover','pointerenter','mouseover','mouseenter','pointerdown','mousedown','pointerup','mouseup','click']) {
+      try { el.dispatchEvent(new MouseEvent(type, opts)); } catch (_) {}
+    }
+    try { if (typeof el.click === 'function') el.click(); } catch (_) {}
+    // Activate nearest button/link ancestor if text node wrapper was matched
+    const host = el.closest && el.closest('a,button,[role="button"]');
+    if (host && host !== el) {
+      try { host.click(); } catch (_) {}
+    }
+    return { x, y, w: r.width, h: r.height, tag: el.tagName, className: (el.className || '').toString().slice(0, 120) };
+  };
+
+  const bodyText = (document.body && document.body.innerText || '');
+  const dump = {
+    href: location.href,
+    title: document.title,
+    bodyHasSlow: /slow\\s*download/i.test(bodyText),
+    bodyHasFast: /fast\\s*download/i.test(bodyText),
+  };
+
+  if (document.querySelector('iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha')) {
+    return { status: 'captcha', detail: 'CAPTCHA present — complete it, then Slow download.', dump };
+  }
+
+  // Prefer exact own-text match via TreeWalker (works when React splits text / uses div buttons).
+  const candidates = [];
+  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const el = node;
+    if (!visible(el) || isVortexish(el)) continue;
+    const own = ownText(el);
+    const full = textOf(el);
+    const label = isSlowLabel(own) ? own : (isSlowLabel(full) ? full : '');
+    if (!label) continue;
+    if (isFastOrPremium(full)) continue;
+    const r = el.getBoundingClientRect();
+    candidates.push({
+      el,
+      label,
+      exactOwn: isSlowLabel(own) ? 1 : 0,
+      area: Math.max(1, r.width * r.height),
+      tagScore: /^(BUTTON|A|INPUT)$/i.test(el.tagName) || el.getAttribute('role') === 'button' ? 3 : 0,
+    });
+  }
+  candidates.sort((a, b) => (b.exactOwn - a.exactOwn) || (b.tagScore - a.tagScore) || (a.area - b.area));
+
+  if (candidates[0]) {
+    const c = candidates[0];
+    const disabled = c.el.disabled || c.el.getAttribute('aria-disabled') === 'true';
+    if (disabled) {
+      return { status: 'waiting-timer', detail: 'Slow download disabled/timer — waiting.', dump };
+    }
+    const geom = clickEl(c.el);
+    dump.clicked = geom;
+    dump.label = c.label;
+    return {
+      status: 'clicked-slow',
+      detail: 'Auto-clicked Slow download ("' + c.label + '") via ' + geom.tag + ' @' + Math.round(geom.x) + ',' + Math.round(geom.y),
+      dump,
+      clickProof: geom,
+    };
+  }
+
+  // Manual
+  const manualWalker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
+  let mnode;
+  while ((mnode = manualWalker.nextNode())) {
+    const el = mnode;
+    if (!visible(el) || isVortexish(el)) continue;
+    const t = textOf(el);
+    const h = hrefOf(el);
+    if (/[?&]nmm=0(?:&|$)/i.test(h) || /^(manual(\\s*download)?|download\\s*manually)$/i.test(t) || /^manual$/i.test(t)) {
+      const geom = clickEl(el);
+      return { status: 'clicked-manual', detail: 'Auto-clicked Manual Download.', dump: { ...dump, clicked: geom } };
+    }
+  }
+
+  if (dump.bodyHasSlow) {
+    return { status: 'not-found', detail: 'Frame has Slow download text but no clickable control yet — retrying…', dump };
+  }
+  return { status: 'not-found', detail: 'Looking for Slow download in this frame…', dump };
+})()`
+
+type AssistResult = {
   status:
     | 'clicked-slow'
     | 'clicked-manual'
@@ -190,189 +308,352 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<{
     | 'not-found'
     | 'error'
   detail: string
-}> {
+  dump?: Record<string, unknown>
+  clickProof?: { x: number; y: number; w: number; h: number; tag: string }
+}
+
+function listNexusFrames(win: BrowserWindow): Array<{ url: string; executeJavaScript: (code: string) => Promise<unknown> }> {
+  const frames: Array<{ url: string; executeJavaScript: (code: string) => Promise<unknown> }> = []
+  try {
+    const main = win.webContents.mainFrame
+    const all = typeof main.framesInSubtree !== 'undefined' ? main.framesInSubtree : [main]
+    for (const f of all) {
+      frames.push({
+        url: f.url || '',
+        executeJavaScript: (code: string) => f.executeJavaScript(code, true),
+      })
+    }
+  } catch {
+    // fall through
+  }
+  if (!frames.length) {
+    frames.push({
+      url: win.webContents.getURL(),
+      executeJavaScript: (code: string) => win.webContents.executeJavaScript(code, true),
+    })
+  }
+  return frames
+}
+
+/** CDP Page.getFrameTree node shape */
+type CdpFrameTree = {
+  frame: { id: string; url?: string }
+  childFrames?: CdpFrameTree[]
+}
+
+function flattenFrameTree(tree: CdpFrameTree): Array<{ id: string; url?: string }> {
+  const out: Array<{ id: string; url?: string }> = [
+    { id: tree.frame.id, url: tree.frame.url },
+  ]
+  for (const c of tree.childFrames || []) out.push(...flattenFrameTree(c))
+  return out
+}
+
+async function cdpDispatchTrustedClick(
+  wc: BrowserWindow['webContents'],
+  x: number,
+  y: number,
+): Promise<void> {
+  await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x,
+    y,
+  })
+  await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x,
+    y,
+    button: 'left',
+    buttons: 1,
+    clickCount: 1,
+  })
+  await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x,
+    y,
+    button: 'left',
+    buttons: 0,
+    clickCount: 1,
+  })
+  // Electron input pipeline as a second trusted path
+  try {
+    wc.sendInputEvent({ type: 'mouseMove', x: Math.round(x), y: Math.round(y) })
+    wc.sendInputEvent({
+      type: 'mouseDown',
+      x: Math.round(x),
+      y: Math.round(y),
+      button: 'left',
+      clickCount: 1,
+    })
+    wc.sendInputEvent({
+      type: 'mouseUp',
+      x: Math.round(x),
+      y: Math.round(y),
+      button: 'left',
+      clickCount: 1,
+    })
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Trusted CDP click: Nexus ignores untrusted el.click()/dispatchEvent.
+ * Walks every frame + DOM.performSearch for "Slow download", clicks Free-tier control center.
+ */
+async function cdpForceClickSlowDownload(win: BrowserWindow): Promise<AssistResult | null> {
+  const wc = win.webContents
+  try {
+    wc.debugger.attach('1.3')
+  } catch {
+    // already attached
+  }
+  try {
+    await wc.debugger.sendCommand('Page.enable')
+    await wc.debugger.sendCommand('DOM.enable')
+    await wc.debugger.sendCommand('Runtime.enable')
+
+    const dumps: Array<Record<string, unknown>> = []
+
+    // 1) Per-frame isolated world: find exact Slow download control + viewport coords
+    const { frameTree } = (await wc.debugger.sendCommand('Page.getFrameTree')) as {
+      frameTree: CdpFrameTree
+    }
+    const frames = flattenFrameTree(frameTree)
+
+    for (const frame of frames) {
+      let contextId: number | undefined
+      try {
+        const world = (await wc.debugger.sendCommand('Page.createIsolatedWorld', {
+          frameId: frame.id,
+          worldName: `modunary-slow-${Date.now()}`,
+          grantUniveralAccess: true,
+        })) as { executionContextId: number }
+        contextId = world.executionContextId
+      } catch {
+        continue
+      }
+
+      const evalResult = (await wc.debugger.sendCommand('Runtime.evaluate', {
+        contextId,
+        expression: SLOW_DOWNLOAD_ASSIST_SCRIPT,
+        returnByValue: true,
+        awaitPromise: true,
+      })) as { result?: { value?: AssistResult } }
+
+      const value = evalResult.result?.value
+      dumps.push({
+        frameId: frame.id,
+        url: frame.url,
+        status: value?.status,
+        dump: value?.dump,
+        clickProof: value?.clickProof,
+      })
+
+      if (value?.status === 'clicked-slow' && value.clickProof) {
+        // Coords from iframe are frame-local; convert via DOM quads when possible.
+        let x = value.clickProof.x
+        let y = value.clickProof.y
+        try {
+          const search = (await wc.debugger.sendCommand('DOM.performSearch', {
+            query: 'Slow download',
+            includeUserAgentShadowDOM: true,
+          })) as { searchId: string; resultCount: number }
+          if (search.resultCount > 0) {
+            const { nodeIds } = (await wc.debugger.sendCommand('DOM.getSearchResults', {
+              searchId: search.searchId,
+              fromIndex: 0,
+              toIndex: Math.min(search.resultCount, 12),
+            })) as { nodeIds: number[] }
+            let best: { x: number; y: number; area: number; html?: string } | null = null
+            for (const nodeId of nodeIds) {
+              try {
+                const desc = (await wc.debugger.sendCommand('DOM.describeNode', {
+                  nodeId,
+                  depth: 0,
+                })) as { node?: { nodeName?: string; attributes?: string[] } }
+                const attrs = desc.node?.attributes || []
+                const htmlHint = `${desc.node?.nodeName || ''} ${attrs.join(' ')}`
+                if (/fast/i.test(htmlHint) && !/slow/i.test(htmlHint)) continue
+                const box = (await wc.debugger.sendCommand('DOM.getContentQuads', {
+                  nodeId,
+                })) as { quads?: number[][] }
+                const quad = box.quads?.[0]
+                if (!quad || quad.length < 8) continue
+                const xs = [quad[0], quad[2], quad[4], quad[6]]
+                const ys = [quad[1], quad[3], quad[5], quad[7]]
+                const minX = Math.min(...xs)
+                const maxX = Math.max(...xs)
+                const minY = Math.min(...ys)
+                const maxY = Math.max(...ys)
+                const area = Math.max(1, (maxX - minX) * (maxY - minY))
+                // Prefer compact Free-tier button over big "Slow download. Wait more." heading
+                if (!best || area < best.area) {
+                  best = {
+                    x: (minX + maxX) / 2,
+                    y: (minY + maxY) / 2,
+                    area,
+                    html: htmlHint.slice(0, 160),
+                  }
+                }
+              } catch {
+                // next node
+              }
+            }
+            await wc.debugger.sendCommand('DOM.discardSearchResults', {
+              searchId: search.searchId,
+            })
+            if (best) {
+              x = best.x
+              y = best.y
+              dumps.push({ quadsClick: best })
+            }
+          }
+        } catch {
+          // fall back to frame-local coords
+        }
+
+        await cdpDispatchTrustedClick(wc, x, y)
+        return {
+          status: 'clicked-slow',
+          detail: `CDP trusted click Slow download @${Math.round(x)},${Math.round(y)} (frame ${String(frame.url || '').slice(0, 48)})`,
+          dump: { frames: dumps },
+          clickProof: { ...value.clickProof, x, y },
+        }
+      }
+    }
+
+    // 2) Global DOM search fallback (pierces frames) — trusted mouse only
+    try {
+      const search = (await wc.debugger.sendCommand('DOM.performSearch', {
+        query: 'Slow download',
+        includeUserAgentShadowDOM: true,
+      })) as { searchId: string; resultCount: number }
+      dumps.push({ performSearchCount: search.resultCount })
+      if (search.resultCount > 0) {
+        const { nodeIds } = (await wc.debugger.sendCommand('DOM.getSearchResults', {
+          searchId: search.searchId,
+          fromIndex: 0,
+          toIndex: Math.min(search.resultCount, 16),
+        })) as { nodeIds: number[] }
+        let best: { x: number; y: number; area: number; nodeId: number } | null = null
+        for (const nodeId of nodeIds) {
+          try {
+            const box = (await wc.debugger.sendCommand('DOM.getContentQuads', {
+              nodeId,
+            })) as { quads?: number[][] }
+            const quad = box.quads?.[0]
+            if (!quad || quad.length < 8) continue
+            const xs = [quad[0], quad[2], quad[4], quad[6]]
+            const ys = [quad[1], quad[3], quad[5], quad[7]]
+            const minX = Math.min(...xs)
+            const maxX = Math.max(...xs)
+            const minY = Math.min(...ys)
+            const maxY = Math.max(...ys)
+            const w = maxX - minX
+            const h = maxY - minY
+            if (w < 20 || h < 10 || w > 480 || h > 120) continue // skip huge headings / tiny noise
+            const area = w * h
+            if (!best || area < best.area) {
+              best = { x: (minX + maxX) / 2, y: (minY + maxY) / 2, area, nodeId }
+            }
+          } catch {
+            // next
+          }
+        }
+        await wc.debugger.sendCommand('DOM.discardSearchResults', { searchId: search.searchId })
+        if (best) {
+          await cdpDispatchTrustedClick(wc, best.x, best.y)
+          return {
+            status: 'clicked-slow',
+            detail: `CDP DOM-search trusted click Slow download @${Math.round(best.x)},${Math.round(best.y)} area=${Math.round(best.area)}`,
+            dump: { frames: dumps, best },
+            clickProof: {
+              x: best.x,
+              y: best.y,
+              w: 0,
+              h: 0,
+              tag: 'DOMSearch',
+            },
+          }
+        }
+      }
+    } catch (err) {
+      dumps.push({
+        searchError: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    return {
+      status: 'not-found',
+      detail: 'CDP did not find a clickable Slow download control.',
+      dump: { frames: dumps },
+    }
+  } catch (err) {
+    return {
+      status: 'error',
+      detail: `CDP assist failed: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  } finally {
+    try {
+      if (wc.debugger.isAttached()) wc.debugger.detach()
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Try to click Slow Download / Manual Download only.
+ * Nexus ignores untrusted el.click() — CDP / sendInputEvent trusted mouse is required.
+ * Never clicks Vortex / Fast / Premium. Never solves CAPTCHA.
+ */
+export async function tryAssistSlowDownload(win: BrowserWindow): Promise<AssistResult> {
   if (win.isDestroyed()) return { status: 'error', detail: 'Browser closed.' }
 
   const blocked = takeLastBlockedProtocol(Date.now() - 15_000)
   if (blocked) {
     return {
       status: 'blocked-vortex',
-      detail: `Blocked Vortex/nxm navigation (${blocked.slice(0, 80)}…). Click Manual / Slow Download only.`,
+      detail: `Blocked Vortex/nxm navigation (${blocked.slice(0, 80)}…). Click Slow download only.`,
     }
   }
 
   try {
-    const result = (await win.webContents.executeJavaScript(`(() => {
-      const textOf = (el) => ((el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.title || '') + '').replace(/\\s+/g, ' ').trim();
-      const hrefOf = (el) => {
-        const a = el.closest ? (el.closest('a') || el) : el;
-        return ((el.href || (a && a.href) || el.getAttribute && el.getAttribute('href') || '') + '').toLowerCase();
-      };
-      const isVortexish = (el) => {
-        const t = textOf(el);
-        const h = hrefOf(el);
-        if (/nxm:\\/\\//i.test(h) || /[?&]nmm=1(?:&|$)/i.test(h)) return true;
-        // Exact-ish vortex / mod-manager labels only (do not match feature-list copy).
-        if (/^(vortex|mod\\s*manager(\\s*download)?|download with (vortex|manager)|nmm)$/i.test(t)) return true;
-        if (/\\b(vortex|nxm)\\b/i.test(t) && /download/i.test(t) && !/slow/i.test(t)) return true;
-        return false;
-      };
-      const isFastOrPremium = (t) => /fast\\s*download/i.test(t) || (/^premium$/i.test(t));
-      const isSlowLabel = (t) => {
-        const s = (t || '').replace(/\\s+/g, ' ').trim();
-        // Exact Free-tier button label: "Slow download" (any case) ± trailing period
-        return /^slow\\s*downloads?\\.?$/i.test(s);
-      };
-      const isSlowLoose = (t) => {
-        const s = (t || '').replace(/\\s+/g, ' ').trim();
-        if (isFastOrPremium(s)) return false;
-        // Button or short control containing Slow download; exclude long marketing blurb
-        if (isSlowLabel(s)) return true;
-        if (/slow\\s*downloads?/i.test(s) && s.length <= 48 && !/fast\\s*download/i.test(s)) return true;
-        return false;
-      };
-
-      const clickEl = (el, outline) => {
-        try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
-        try { el.style.outline = outline; } catch (_) {}
-        try {
-          el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, view: window }));
-          el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-          el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-          el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        } catch (_) {}
-        try { if (typeof el.click === 'function') el.click(); } catch (_) {}
-      };
-
-      const visible = (el) => {
-        const r = el.getBoundingClientRect();
-        if (r.width < 4 || r.height < 4) return false;
-        const st = window.getComputedStyle(el);
-        if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
-        return true;
-      };
-
-      // Broad clickable set — Nexus Free/Premium modal often uses div/span buttons, not <button>.
-      const selector = [
-        'a', 'button', '[role="button"]', 'input[type="button"]', 'input[type="submit"]', 'label',
-        '[class*="button"]', '[class*="Button"]', '[class*="btn"]',
-        '[class*="download"]', '[class*="Download"]',
-        '[data-testid*="download"]', '[data-testid*="Download"]',
-        'div', 'span'
-      ].join(',');
-
-      const collectRoots = () => {
-        const roots = [document];
-        for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
-          try {
-            if (iframe.contentDocument) roots.push(iframe.contentDocument);
-          } catch (_) {}
-        }
-        return roots;
-      };
-
-      const captcha = document.querySelector('iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, #captcha, [data-callback*=captcha]');
-      if (captcha) return { status: 'captcha', detail: 'CAPTCHA present — complete it yourself, then click Slow download (not Fast/Premium).' };
-
-      // 1) Find Slow download candidates (exact label preferred, smallest visible hit target).
-      const slowCandidates = [];
-      for (const root of collectRoots()) {
-        let nodes;
-        try { nodes = Array.from(root.querySelectorAll(selector)); } catch (_) { nodes = []; }
-        for (const el of nodes) {
-          if (!visible(el) || isVortexish(el)) continue;
-          const t = textOf(el);
-          if (!t || isFastOrPremium(t)) continue;
-          if (!isSlowLoose(t)) continue;
-          // Skip huge containers that merely include the words (Free card copy: "Slow download. Wait more.")
-          const exact = isSlowLabel(t);
-          const headingOnly = /wait more/i.test(t) && !exact;
-          if (headingOnly && t.length > 40) continue;
-          const r = el.getBoundingClientRect();
-          slowCandidates.push({
-            el,
-            t,
-            exact: exact ? 1 : 0,
-            area: r.width * r.height,
-            // Prefer actual controls over plain text nodes wrapping the same words
-            tagScore: /^(BUTTON|A|INPUT)$/i.test(el.tagName) || el.getAttribute('role') === 'button' ? 2 : 0,
-          });
-        }
-      }
-      slowCandidates.sort((a, b) =>
-        (b.exact - a.exact) || (b.tagScore - a.tagScore) || (a.area - b.area)
-      );
-
-      const slow = slowCandidates[0];
-      if (slow) {
-        const el = slow.el;
-        const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true' || /\\bdisabled\\b/i.test(el.className || '');
-        const label = slow.t;
-        if (disabled || /\\d+\\s*s(ec)?\\b/i.test(label) || /please wait/i.test(label)) {
-          try { el.style.outline = '3px solid #c9a227'; } catch (_) {}
-          return { status: 'waiting-timer', detail: 'Slow download timer — waiting to auto-click when it enables.' };
-        }
-        clickEl(el, '3px solid #6f9e6a');
-        return { status: 'clicked-slow', detail: 'Auto-clicked Slow download ("' + label.slice(0, 40) + '").' };
-      }
-
-      // 2) Manual / MANUAL
-      for (const root of collectRoots()) {
-        let nodes;
-        try { nodes = Array.from(root.querySelectorAll(selector)); } catch (_) { nodes = []; }
-        const manual = nodes.find((el) => {
-          if (!visible(el) || isVortexish(el)) return false;
-          const t = textOf(el);
-          const h = hrefOf(el);
-          if (/[?&]nmm=0(?:&|$)/i.test(h)) return true;
-          return /^(manual(\\s*download)?|download\\s*manually)$/i.test(t) || /^manual$/i.test(t);
-        });
-        if (manual) {
-          clickEl(manual, '3px solid #c9a227');
-          return { status: 'clicked-manual', detail: 'Auto-clicked Manual Download — will auto-click Slow download next.' };
-        }
-      }
-
-      // 3) If page clearly shows Slow download text but we missed the control, keep searching (do not stop on Vortex).
-      const bodyText = (document.body && document.body.innerText || '');
-      if (/slow\\s*download/i.test(bodyText)) {
-        return {
-          status: 'not-found',
-          detail: 'Saw "Slow download" on page but could not bind the button yet — retrying…',
-        };
-      }
-
-      // Vortex only if Slow download is not on the page
-      for (const root of collectRoots()) {
-        let nodes;
-        try { nodes = Array.from(root.querySelectorAll('a,button,[role="button"]')); } catch (_) { nodes = []; }
-        const vortexBtn = nodes.find((el) => visible(el) && isVortexish(el));
-        if (vortexBtn) {
-          try { vortexBtn.style.outline = '3px solid #a33'; } catch (_) {}
-          return {
-            status: 'blocked-vortex',
-            detail: 'Ignoring Vortex / Mod Manager — still looking for Slow download (not Fast/Premium).',
-          };
-        }
-      }
-
-      return {
-        status: 'not-found',
-        detail: 'Looking for Slow download to auto-click (never Fast/Premium/Vortex)…',
-      };
-    })()`) ) as {
-      status:
-        | 'clicked-slow'
-        | 'clicked-manual'
-        | 'waiting-timer'
-        | 'captcha'
-        | 'login'
-        | 'blocked-vortex'
-        | 'not-found'
-        | 'error'
-      detail: string
+    // Primary: trusted CDP mouse click at Free-tier Slow download center
+    const cdp = await cdpForceClickSlowDownload(win)
+    if (
+      cdp &&
+      (cdp.status === 'clicked-slow' ||
+        cdp.status === 'clicked-manual' ||
+        cdp.status === 'waiting-timer' ||
+        cdp.status === 'captcha')
+    ) {
+      return cdp
     }
-    return result
+
+    // Secondary diagnostics via frame eval (may still fail due to untrusted click)
+    const frameDumps: Array<{ url: string; status?: string; bodyHasSlow?: boolean }> = []
+    for (const frame of listNexusFrames(win)) {
+      try {
+        const result = (await frame.executeJavaScript(SLOW_DOWNLOAD_ASSIST_SCRIPT)) as AssistResult
+        frameDumps.push({
+          url: frame.url.slice(0, 120),
+          status: result?.status,
+          bodyHasSlow: Boolean(
+            result?.dump && (result.dump as { bodyHasSlow?: boolean }).bodyHasSlow,
+          ),
+        })
+      } catch {
+        frameDumps.push({ url: frame.url.slice(0, 120), status: 'frame-eval-error' })
+      }
+    }
+
+    return {
+      status: 'not-found',
+      detail: `Trusted CDP click missed Slow download — retrying… ${JSON.stringify({ cdp: cdp?.detail, frames: frameDumps }).slice(0, 260)}`,
+      dump: { cdp: cdp?.dump || null, frames: frameDumps },
+    }
   } catch (err) {
     return {
       status: 'error',
