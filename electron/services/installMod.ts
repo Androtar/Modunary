@@ -3,17 +3,19 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { app } from 'electron'
 import { parseSubModuleXml } from './discovery'
 import { ensureAppDirs, resolvePaths } from './paths'
 import { getStoreSnapshot } from './profiles'
 import { ensureInVault } from './vault'
 
 const execFileAsync = promisify(execFile)
-const require = createRequire(import.meta.url)
+const requireFromHere = createRequire(import.meta.url)
 
 export type ImportedModule = {
   folderName: string
@@ -28,6 +30,8 @@ export type ImportArchiveResult = {
   error?: string
   /** BLSE is a game bin overlay, not a Modules/ SubModule. */
   kind?: 'module' | 'blse'
+  /** Which extractor ran (for diagnostics). */
+  extractor?: string
 }
 
 function isArchivePath(filePath: string): boolean {
@@ -35,59 +39,73 @@ function isArchivePath(filePath: string): boolean {
   return lower.endsWith('.zip') || lower.endsWith('.7z') || lower.endsWith('.rar')
 }
 
-function resolveSevenZa(): string | null {
-  try {
-    const bin = require('7zip-bin') as { path7za?: string }
-    if (bin.path7za && fs.existsSync(bin.path7za)) return bin.path7za
-  } catch {
-    // ignore
+/**
+ * Resolve portable 7za.exe. Never uses Expand-Archive / PowerShell.
+ * Searches package export, paths relative to this module / app root, then common installs.
+ */
+function resolveSevenZa(): string {
+  const tried: string[] = []
+  const consider = (p: string | null | undefined): string | null => {
+    if (!p) return null
+    tried.push(p)
+    try {
+      if (fs.existsSync(p)) return p
+    } catch {
+      // ignore
+    }
+    return null
   }
-  const candidates = [
+
+  try {
+    const bin = requireFromHere('7zip-bin') as { path7za?: string }
+    const hit = consider(bin.path7za)
+    if (hit) return hit
+  } catch {
+    // continue
+  }
+
+  const here = path.dirname(fileURLToPath(import.meta.url)) // …/dist-electron or …/electron/services
+  let appRoot: string | null = null
+  try {
+    if (app?.isReady?.() || app?.getAppPath) appRoot = app.getAppPath()
+  } catch {
+    // app may be unavailable in unit contexts
+  }
+
+  const relCandidates = [
+    path.join(here, '..', 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe'),
+    path.join(here, '..', '..', 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe'),
+    path.join(here, 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe'),
+    appRoot ? path.join(appRoot, 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe') : null,
     path.join(process.cwd(), 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe'),
     path.join(process.resourcesPath || '', '7za.exe'),
+    path.join(process.resourcesPath || '', 'app.asar.unpacked', 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe'),
     'C:\\Program Files\\7-Zip\\7z.exe',
     'C:\\Program Files\\7-Zip\\7za.exe',
   ]
-  for (const c of candidates) {
-    if (c && fs.existsSync(c)) return c
-  }
-  return null
-}
-
-/**
- * Extract .zip / .7z / .rar into destDir.
- * Prefers bundled portable 7za (7zip-bin); falls back to Expand-Archive for .zip only.
- */
-async function extractArchive(archivePath: string, destDir: string): Promise<void> {
-  fs.mkdirSync(destDir, { recursive: true })
-  const lower = archivePath.toLowerCase()
-  const sevenZa = resolveSevenZa()
-
-  if (sevenZa) {
-    // x = extract with full paths; -y = yes on all; -aoa = overwrite all
-    await execFileAsync(sevenZa, ['x', archivePath, `-o${destDir}`, '-y', '-aoa'], {
-      windowsHide: true,
-      maxBuffer: 20 * 1024 * 1024,
-    })
-    return
-  }
-
-  if (lower.endsWith('.zip')) {
-    await execFileAsync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-Command',
-        `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`,
-      ],
-      { windowsHide: true },
-    )
-    return
+  for (const c of relCandidates) {
+    const hit = consider(c)
+    if (hit) return hit
   }
 
   throw new Error(
-    `Cannot extract ${path.extname(archivePath) || 'archive'}: bundled 7za missing. Reinstall Modunary dependencies (7zip-bin).`,
+    `7za.exe not found (required for .zip/.7z/.rar). Tried: ${tried.slice(0, 8).join(' | ')}`,
   )
+}
+
+/**
+ * Extract .zip / .7z / .rar with bundled portable 7za only.
+ * Expand-Archive is never used (cannot open .7z).
+ */
+async function extractArchive(archivePath: string, destDir: string): Promise<string> {
+  fs.mkdirSync(destDir, { recursive: true })
+  const sevenZa = resolveSevenZa()
+  // x = extract with full paths; -y = yes; -aoa = overwrite all
+  await execFileAsync(sevenZa, ['x', archivePath, `-o${destDir}`, '-y', '-aoa'], {
+    windowsHide: true,
+    maxBuffer: 20 * 1024 * 1024,
+  })
+  return sevenZa
 }
 
 function findModuleRoots(root: string): string[] {
@@ -213,23 +231,25 @@ export async function importZipToVault(archivePath: string): Promise<ImportArchi
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-mod-'))
   try {
-    await extractArchive(archivePath, tmp)
+    const sevenZa = await extractArchive(archivePath, tmp)
+    const extractor = `7za:${sevenZa}`
     const roots = findModuleRoots(tmp)
     if (roots.length > 0) {
-      return { ok: true, modules: vaultRoots(roots), kind: 'module' }
+      return { ok: true, modules: vaultRoots(roots), kind: 'module', extractor }
     }
 
     // BLSE and similar: bin overlay with Bannerlord.BLSE.*.exe, no SubModule.xml
     if (findBlseBinRoot(tmp)) {
       const blse = installBlseOverlay(tmp)
-      if (!blse.ok) return { ok: false, modules: [], error: blse.error, kind: 'blse' }
+      if (!blse.ok) return { ok: false, modules: [], error: blse.error, kind: 'blse', extractor }
       // Not a Modules/ SubModule — installed into game bin/. Caller may set requiresBlse.
-      return { ok: true, kind: 'blse', modules: [] }
+      return { ok: true, kind: 'blse', modules: [], extractor }
     }
 
     return {
       ok: false,
       modules: [],
+      extractor,
       error:
         'No SubModule.xml found inside the archive (and it is not a BLSE bin overlay).',
     }
@@ -238,9 +258,7 @@ export async function importZipToVault(archivePath: string): Promise<ImportArchi
     return {
       ok: false,
       modules: [],
-      error: msg.includes('Expand-Archive')
-        ? `Archive extract failed (zip-only tool cannot open this file). ${msg}`
-        : msg,
+      error: msg,
     }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })

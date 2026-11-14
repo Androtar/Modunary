@@ -11,7 +11,7 @@ import {
   resolveNexusCollection,
   type NexusCollectionMod,
 } from './stores/nexusCollection'
-import { getDownloadsPath, waitForNewDownload } from './downloadWatch'
+import { getDownloadsPath, listDownloadArchives, waitForNewDownload } from './downloadWatch'
 import {
   createNexusBrowser,
   ensureNexusSessionConfigured,
@@ -281,6 +281,35 @@ async function manualSlowDownloadInstall(
   item.message = `Auto-clicking Manual / Slow Download for “${mod.name}” (never Vortex)…`
   emit({ stage: 'waiting-download', message: item.message })
 
+  // Retry fast-path: re-import a recent matching archive already in Downloads (no re-download).
+  {
+    const hints = [String(mod.modId), mod.name.slice(0, 24), 'BLSE', 'Bannerlord'].map((h) =>
+      h.toLowerCase(),
+    )
+    const recent = listDownloadArchives()
+      .filter((f) => Date.now() - f.mtimeMs < 6 * 60 * 60 * 1000)
+      .map((f) => {
+        const n = f.name.toLowerCase()
+        const score = hints.reduce((s, h) => (h && n.includes(h) ? s + 1 : s), 0)
+        return { f, score }
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score || b.f.mtimeMs - a.f.mtimeMs)[0]?.f
+    if (recent) {
+      item.status = 'importing'
+      item.message = `Re-importing existing ${recent.name} with 7za…`
+      emit({ stage: 'installing', message: item.message })
+      const imported = await importZipToVault(recent.path)
+      if (imported.ok) {
+        item.message = `Imported ${recent.name} (${imported.extractor || '7za'})`
+        return { ok: true, modules: imported.modules, kind: imported.kind }
+      }
+      // If extract failed, fall through to Slow Download / fresh file.
+      item.message = `Existing archive failed (${imported.error || 'unknown'}) — trying Slow Download…`
+      emit({ stage: 'waiting-download', message: item.message })
+    }
+  }
+
   const win = ensureBrowser(parent)
   win.show()
   win.focus()
@@ -437,6 +466,7 @@ async function manualSlowDownloadInstall(
     emit({ stage: 'installing', message: item.message })
     const imported = await importZipToVault(archive.path)
     if (!imported.ok) return { ok: false, error: imported.error }
+    item.message = `Imported ${archive.name} (${imported.extractor || '7za'})`
     return { ok: true, modules: imported.modules, kind: imported.kind }
   }
 
