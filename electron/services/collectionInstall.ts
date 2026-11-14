@@ -17,10 +17,12 @@ import {
   ensureNexusSessionConfigured,
   getActiveNexusDownloadPath,
   injectNexusGuideBanner,
+  manualDownloadPopupUrl,
   modFilesUrl,
   nexusLoginUrl,
   nexusSessionLooksLoggedIn,
   takeCompletedNexusDownload,
+  takeLastBlockedProtocol,
   tryAssistSlowDownload,
 } from './nexusBrowser'
 
@@ -268,10 +270,14 @@ async function manualSlowDownloadInstall(
   if (!session) return { ok: false, error: 'No session.' }
   const item = session.items[session.index]
   const domain = session.collection.domain || 'mountandblade2bannerlord'
-  const url = modFilesUrl(domain, mod.modId, mod.fileId)
+  // Prefer Manual Download popup (nmm=0). Never Vortex / nxm / nmm=1.
+  const url =
+    mod.fileId && mod.fileId > 0
+      ? manualDownloadPopupUrl(mod.fileId)
+      : modFilesUrl(domain, mod.modId, mod.fileId)
 
   item.status = 'waiting-user'
-  item.message = `ACTION NEEDED: Click Slow Download for “${mod.name}” (complete timer/CAPTCHA yourself). Watching Downloads…`
+  item.message = `ACTION NEEDED: Click Slow Download for “${mod.name}” (Manual only — never Vortex). Watching Downloads…`
   emit({ stage: 'waiting-download', message: item.message })
 
   const win = ensureBrowser(parent)
@@ -282,15 +288,21 @@ async function manualSlowDownloadInstall(
   await loadUrl(win, url)
   await injectNexusGuideBanner(
     win,
-    `Modunary: Click “Slow Download” for ${mod.name}. Complete any timer/CAPTCHA yourself — Modunary will import the ZIP from Downloads.`,
+    `Modunary: Use Manual / Slow Download for ${mod.name} — never Vortex or Mod Manager. Complete timer/CAPTCHA yourself; ZIP imports from Downloads.`,
   )
 
-  // Assist: try opening download modal / clicking Slow Download when safe.
+  // Assist: Manual + Slow Download only (never Vortex/nxm).
   let lastAssist = ''
   const assistDeadline = Date.now() + 45_000
   while (Date.now() < assistDeadline) {
     if (session.cancelled) return { ok: false, error: 'Cancelled.' }
     if (session.skipCurrent) return { ok: false, skipped: true }
+    const blocked = takeLastBlockedProtocol(sinceMs)
+    if (blocked) {
+      lastAssist = `Blocked Vortex/nxm (${blocked.slice(0, 64)}…)`
+      item.message = `ACTION NEEDED: ${lastAssist}. Click Slow Download only.`
+      emit({ stage: 'waiting-download', message: item.message })
+    }
     const assist = await tryAssistSlowDownload(win)
     lastAssist = assist.detail
     await injectNexusGuideBanner(win, `Modunary: ${assist.detail}`)
@@ -299,7 +311,6 @@ async function manualSlowDownloadInstall(
       emit({ stage: 'waiting-download', message: item.message })
       if (assist.status === 'captcha' || assist.status === 'waiting-timer') break
       if (assist.status === 'login') {
-        // Wait a bit for login then retry
         await new Promise((r) => setTimeout(r, 2000))
         continue
       }
@@ -309,11 +320,17 @@ async function manualSlowDownloadInstall(
       emit({ stage: 'waiting-download', message: item.message })
       break
     }
-    if (assist.status === 'clicked-download') {
+    if (assist.status === 'clicked-manual') {
       item.message =
-        'ACTION NEEDED: Download popup opened — click Slow Download (complete timer/CAPTCHA if shown).'
+        'ACTION NEEDED: Manual Download opened — click Slow Download (not Vortex; complete timer/CAPTCHA if shown).'
       emit({ stage: 'waiting-download', message: item.message })
       await new Promise((r) => setTimeout(r, 1200))
+      continue
+    }
+    if (assist.status === 'blocked-vortex') {
+      item.message = `ACTION NEEDED: ${assist.detail}`
+      emit({ stage: 'waiting-download', message: item.message })
+      await new Promise((r) => setTimeout(r, 1500))
       continue
     }
     item.message = `ACTION NEEDED: ${assist.detail}`
@@ -342,7 +359,8 @@ async function manualSlowDownloadInstall(
           assist.status === 'captcha' ||
           assist.status === 'waiting-timer' ||
           assist.status === 'not-found' ||
-          assist.status === 'clicked-download'
+          assist.status === 'clicked-manual' ||
+          assist.status === 'blocked-vortex'
         ) {
           const msg = `ACTION NEEDED: ${assist.detail}`
           item.message = msg
@@ -438,7 +456,7 @@ async function installOne(
     return
   }
 
-  item.message = `${premium.error || 'Premium unavailable'} — opening Slow Download…`
+  item.message = `${premium.error || 'Premium unavailable'} — opening Manual / Slow Download (never Vortex)…`
   emit({ stage: 'waiting-download', message: item.message })
 
   const manual = await manualSlowDownloadInstall(mod, parent)
@@ -580,7 +598,15 @@ export async function startCollectionInstall(input: {
     return { ok: false, error: resolved.error || 'Could not resolve collection.' }
   }
 
-  const mods = resolved.collection.mods.filter((m) => input.includeOptional || !m.optional)
+  const filtered = resolved.collection.mods.filter((m) => input.includeOptional || !m.optional)
+  // Deduplicate by modId+fileId (Collections can list the same mod twice → React key / install dupes).
+  const seen = new Set<string>()
+  const mods = filtered.filter((m) => {
+    const key = `${m.modId}:${m.fileId || 0}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
   if (!mods.length) {
     return { ok: false, error: 'Collection has no installable mods (or only optional ones).' }
   }

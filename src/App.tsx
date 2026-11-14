@@ -776,7 +776,7 @@ export default function App() {
     }
     setMessage({
       kind: 'ok',
-      text: `Installing Collection “${res.collection?.name || url}” (${res.collection?.mods.length ?? '?'} mods). Premium CDN when available; otherwise Slow Download — complete timer/CAPTCHA yourself.`,
+      text: `Installing Collection “${res.collection?.name || url}” (${res.collection?.mods.length ?? '?'} mods). Premium CDN when available; otherwise Manual / Slow Download only (never Vortex/nxm).`,
     })
   }
 
@@ -1456,9 +1456,9 @@ export default function App() {
                               fontWeight: 600,
                             }}
                           >
-                            Click Slow Download in the Nexus window (complete timer/CAPTCHA
-                            yourself). Modunary will import the ZIP from Downloads — it will not
-                            hang silently.
+                            Click Manual / Slow Download only in the Nexus window (never Vortex
+                            / Mod Manager / nxm). Complete timer/CAPTCHA yourself — Modunary
+                            imports the ZIP from Downloads.
                           </div>
                         )}
                         {collectionProgress.currentModName && (
@@ -1514,9 +1514,9 @@ export default function App() {
                           )}
                         </div>
                         <ul className="activate-progress" style={{ maxHeight: 220, overflow: 'auto' }}>
-                          {collectionProgress.items.map((item) => (
+                          {collectionProgress.items.map((item, itemIndex) => (
                             <li
-                              key={item.modId}
+                              key={`${item.modId}-${item.fileId || 0}-${itemIndex}`}
                               className={
                                 item.status === 'done'
                                   ? 'done'

@@ -6,13 +6,34 @@ import { getDownloadsPath } from './downloadWatch'
 const PARTITION = 'persist:modunary-nexus'
 const NEXUS_ORIGIN = 'https://www.nexusmods.com'
 const NEXUS_NEXT = 'https://next.nexusmods.com'
+/** Mount & Blade II: Bannerlord on Nexus Mods */
+const BANNERLORD_GAME_ID = 3174
 
 let downloadHooked = false
 let lastCompletedDownload: { path: string; name: string; at: number } | null = null
 let activeDownloadPath: string | null = null
+let lastBlockedProtocol: { url: string; at: number } | null = null
 
 export function getNexusSession() {
   return session.fromPartition(PARTITION)
+}
+
+export function takeLastBlockedProtocol(sinceMs: number): string | null {
+  if (!lastBlockedProtocol || lastBlockedProtocol.at < sinceMs - 500) return null
+  const url = lastBlockedProtocol.url
+  lastBlockedProtocol = null
+  return url
+}
+
+function isVortexOrNxmUrl(url: string): boolean {
+  const lower = (url || '').toLowerCase()
+  return (
+    lower.startsWith('nxm:') ||
+    lower.startsWith('nxm://') ||
+    lower.includes('nxm://') ||
+    /[?&]nmm=1(?:&|$)/i.test(lower) ||
+    /vortex/i.test(lower) && /protocol|scheme|nxm/i.test(lower)
+  )
 }
 
 /** Persist cookies + force BrowserWindow downloads into the real Downloads folder. */
@@ -28,6 +49,16 @@ export function ensureNexusSessionConfigured(): void {
 
   if (downloadHooked) return
   downloadHooked = true
+
+  // Never hand off to Vortex / OS nxm handler from this partition.
+  ses.setPermissionRequestHandler((_wc, permission, callback) => {
+    if (permission === 'openExternal') {
+      callback(false)
+      return
+    }
+    callback(true)
+  })
+
   ses.on('will-download', (_event, item) => {
     const name = item.getFilename() || `nexus-download-${Date.now()}.zip`
     const savePath = path.join(downloads, name)
@@ -56,10 +87,50 @@ export function getActiveNexusDownloadPath(): string | null {
 export async function nexusSessionLooksLoggedIn(): Promise<boolean> {
   const ses = getNexusSession()
   const cookies = await ses.cookies.get({ domain: '.nexusmods.com' })
-  // Common auth cookies (names vary); any member/session-ish cookie counts.
   return cookies.some((c) =>
     /sid|session|auth|member|jwt|token|nexusmods_authentication/i.test(c.name),
   )
+}
+
+function attachProtocolGuards(win: BrowserWindow): void {
+  const block = (url: string): boolean => {
+    if (!isVortexOrNxmUrl(url)) return false
+    lastBlockedProtocol = { url, at: Date.now() }
+    void injectNexusGuideBanner(
+      win,
+      'Modunary blocked a Vortex/nxm link. Use Manual / Slow Download only — never Vortex.',
+    )
+    return true
+  }
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (block(url)) return { action: 'deny' }
+    // Keep http(s) popups (download modal) inside this window when possible
+    if (/^https?:/i.test(url)) {
+      void win.loadURL(url)
+      return { action: 'deny' }
+    }
+    return { action: 'deny' }
+  })
+
+  win.webContents.on('will-navigate', (event, url) => {
+    if (block(url)) event.preventDefault()
+  })
+
+  win.webContents.on('will-redirect', (event, url) => {
+    if (block(url)) event.preventDefault()
+  })
+
+  win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
+    const url = validatedURL || ''
+    if (isVortexOrNxmUrl(url) || /ERR_UNKNOWN_URL_SCHEME/i.test(errorDescription || '')) {
+      lastBlockedProtocol = { url: url || errorDescription, at: Date.now() }
+      void injectNexusGuideBanner(
+        win,
+        `Modunary blocked Vortex/nxm (${errorDescription || errorCode}). Use Manual / Slow Download only.`,
+      )
+    }
+  })
 }
 
 export function createNexusBrowser(parent: BrowserWindow | null): BrowserWindow {
@@ -68,7 +139,7 @@ export function createNexusBrowser(parent: BrowserWindow | null): BrowserWindow 
     width: 1180,
     height: 860,
     parent: parent || undefined,
-    title: 'Nexus Mods — Modunary Collection install',
+    title: 'Nexus Mods — Modunary Collection install (Slow Download only)',
     backgroundColor: '#1a1410',
     webPreferences: {
       partition: PARTITION,
@@ -78,6 +149,7 @@ export function createNexusBrowser(parent: BrowserWindow | null): BrowserWindow 
     },
   })
   win.setMenuBarVisibility(false)
+  attachProtocolGuards(win)
   return win
 }
 
@@ -104,72 +176,112 @@ export async function injectNexusGuideBanner(
 }
 
 /**
- * Try to click Slow Download when safe (no CAPTCHA). Never solves CAPTCHA.
- * Returns status for UI messaging.
+ * Try to click Slow Download / Manual Download only.
+ * Never clicks Vortex / Mod Manager / nxm. Never solves CAPTCHA.
  */
 export async function tryAssistSlowDownload(win: BrowserWindow): Promise<{
   status:
     | 'clicked-slow'
-    | 'clicked-download'
+    | 'clicked-manual'
     | 'waiting-timer'
     | 'captcha'
     | 'login'
+    | 'blocked-vortex'
     | 'not-found'
     | 'error'
   detail: string
 }> {
   if (win.isDestroyed()) return { status: 'error', detail: 'Browser closed.' }
+
+  const blocked = takeLastBlockedProtocol(Date.now() - 15_000)
+  if (blocked) {
+    return {
+      status: 'blocked-vortex',
+      detail: `Blocked Vortex/nxm navigation (${blocked.slice(0, 80)}…). Click Manual / Slow Download only.`,
+    }
+  }
+
   try {
     const result = (await win.webContents.executeJavaScript(`(() => {
-      const textOf = (el) => ((el.innerText || el.textContent || el.value || '') + '').replace(/\\s+/g, ' ').trim();
-      const all = Array.from(document.querySelectorAll('a,button,[role=button],input[type=button],input[type=submit]'));
+      const textOf = (el) => ((el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.title || '') + '').replace(/\\s+/g, ' ').trim();
+      const hrefOf = (el) => {
+        const a = el.closest ? el.closest('a') : null;
+        return ((el.href || (a && a.href) || el.getAttribute('href') || '') + '').toLowerCase();
+      };
+      const isVortexish = (el) => {
+        const t = textOf(el);
+        const h = hrefOf(el);
+        if (/nxm:\\/\\//i.test(h) || /[?&]nmm=1(?:&|$)/i.test(h)) return true;
+        if (/vortex|mod\\s*manager|download with (vortex|manager)|nmm\\b/i.test(t)) return true;
+        if (/\\bnxm\\b/i.test(t)) return true;
+        return false;
+      };
+      const all = Array.from(document.querySelectorAll('a,button,[role=button],input[type=button],input[type=submit],label'));
 
       const captcha = document.querySelector('iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, #captcha, [data-callback*=captcha]');
-      if (captcha) return { status: 'captcha', detail: 'CAPTCHA present — complete it, then click Slow Download.' };
+      if (captcha) return { status: 'captcha', detail: 'CAPTCHA present — complete it yourself, then click Slow Download (not Vortex).' };
 
       const body = (document.body && document.body.innerText || '').toLowerCase();
       if (/sign in|log in|login to download|please log in/.test(body) && /nexus/.test(location.host)) {
-        const signIn = all.find(el => /sign in|log in/i.test(textOf(el)));
-        if (signIn && !/download/i.test(textOf(signIn))) {
+        const signIn = all.find(el => /^(sign in|log in)$/i.test(textOf(el)));
+        if (signIn) {
           return { status: 'login', detail: 'Not logged in — sign in in this window (session will persist).' };
         }
       }
 
-      const slow = all.find(el => /slow\\s*download/i.test(textOf(el)));
+      // 1) Prefer Slow Download (free-user interstitial)
+      const slow = all.find(el => /slow\\s*download/i.test(textOf(el)) && !isVortexish(el));
       if (slow) {
         const disabled = slow.disabled || slow.getAttribute('aria-disabled') === 'true' || /\\bdisabled\\b/i.test(slow.className || '');
         const label = textOf(slow);
         if (disabled || /\\d+\\s*s(ec)?/i.test(label) || /please wait/i.test(label)) {
           slow.scrollIntoView({ block: 'center', behavior: 'smooth' });
           slow.style.outline = '3px solid #c9a227';
-          return { status: 'waiting-timer', detail: 'Slow Download timer/active — wait, then it will enable (or click when ready).' };
+          return { status: 'waiting-timer', detail: 'Slow Download timer active — wait, then click when enabled (not Vortex).' };
         }
         slow.scrollIntoView({ block: 'center', behavior: 'smooth' });
         slow.style.outline = '3px solid #6f9e6a';
         slow.click();
-        return { status: 'clicked-slow', detail: 'Clicked Slow Download.' };
+        return { status: 'clicked-slow', detail: 'Clicked Slow Download (manual path).' };
       }
 
-      // File row / primary Download that opens the Slow Download modal
-      const downloadBtn = all.find(el => {
+      // 2) Manual / MANUAL download (opens Slow Download for free users) — never Mod Manager
+      const manual = all.find(el => {
+        if (isVortexish(el)) return false;
         const t = textOf(el);
-        return /^download$/i.test(t) || /manual download|free download|download file/i.test(t);
+        const h = hrefOf(el);
+        if (/[?&]nmm=0(?:&|$)/i.test(h)) return true;
+        return /^(manual(\\s*download)?|download\\s*manually)$/i.test(t) || /^manual$/i.test(t);
       });
-      if (downloadBtn) {
-        downloadBtn.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        downloadBtn.style.outline = '3px solid #c9a227';
-        downloadBtn.click();
-        return { status: 'clicked-download', detail: 'Clicked Download — look for Slow Download in the popup.' };
+      if (manual) {
+        manual.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        manual.style.outline = '3px solid #c9a227';
+        manual.click();
+        return { status: 'clicked-manual', detail: 'Clicked Manual Download — look for Slow Download next (not Vortex).' };
       }
 
-      return { status: 'not-found', detail: 'Slow Download button not found yet — open the Files tab and click Slow Download.' };
+      // Explicitly ignore Vortex buttons so we do not "succeed" by opening nxm
+      const vortexBtn = all.find(el => isVortexish(el));
+      if (vortexBtn) {
+        vortexBtn.style.outline = '3px solid #a33';
+        return {
+          status: 'blocked-vortex',
+          detail: 'Vortex / Mod Manager Download is visible — do not use it. Click Manual or Slow Download only.',
+        };
+      }
+
+      return {
+        status: 'not-found',
+        detail: 'Slow/Manual Download not found yet — open Files, click Manual Download, then Slow Download (never Vortex).',
+      };
     })()`) ) as {
       status:
         | 'clicked-slow'
-        | 'clicked-download'
+        | 'clicked-manual'
         | 'waiting-timer'
         | 'captcha'
         | 'login'
+        | 'blocked-vortex'
         | 'not-found'
         | 'error'
       detail: string
@@ -183,13 +295,25 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<{
   }
 }
 
+/** Files tab URL forced to manual (nmm=0) — never Vortex/nxm. */
 export function modFilesUrl(domain: string, modId: number, fileId?: number): string {
   const base = `${NEXUS_ORIGIN}/${domain}/mods/${modId}?tab=files`
-  return fileId && fileId > 0 ? `${base}&file_id=${fileId}` : base
+  if (fileId && fileId > 0) {
+    return `${base}&file_id=${fileId}&nmm=0`
+  }
+  return `${base}&nmm=0`
+}
+
+/**
+ * Direct Manual Download popup (nmm=0). Prefer this when fileId is known.
+ * Free users get Slow Download on this page; Premium may start immediately.
+ */
+export function manualDownloadPopupUrl(fileId: number, gameId = BANNERLORD_GAME_ID): string {
+  return `${NEXUS_ORIGIN}/Core/Libs/Common/Widgets/DownloadPopUp?id=${fileId}&game_id=${gameId}&nmm=0`
 }
 
 export function nexusLoginUrl(): string {
   return `${NEXUS_ORIGIN}/users/sign_in?return_to=${encodeURIComponent(NEXUS_NEXT)}`
 }
 
-export { PARTITION, NEXUS_ORIGIN }
+export { PARTITION, NEXUS_ORIGIN, BANNERLORD_GAME_ID }
