@@ -205,89 +205,160 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<{
     const result = (await win.webContents.executeJavaScript(`(() => {
       const textOf = (el) => ((el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.title || '') + '').replace(/\\s+/g, ' ').trim();
       const hrefOf = (el) => {
-        const a = el.closest ? el.closest('a') : null;
-        return ((el.href || (a && a.href) || el.getAttribute('href') || '') + '').toLowerCase();
+        const a = el.closest ? (el.closest('a') || el) : el;
+        return ((el.href || (a && a.href) || el.getAttribute && el.getAttribute('href') || '') + '').toLowerCase();
       };
       const isVortexish = (el) => {
         const t = textOf(el);
         const h = hrefOf(el);
         if (/nxm:\\/\\//i.test(h) || /[?&]nmm=1(?:&|$)/i.test(h)) return true;
-        if (/vortex|mod\\s*manager|download with (vortex|manager)|nmm\\b/i.test(t)) return true;
-        if (/\\bnxm\\b/i.test(t)) return true;
+        // Exact-ish vortex / mod-manager labels only (do not match feature-list copy).
+        if (/^(vortex|mod\\s*manager(\\s*download)?|download with (vortex|manager)|nmm)$/i.test(t)) return true;
+        if (/\\b(vortex|nxm)\\b/i.test(t) && /download/i.test(t) && !/slow/i.test(t)) return true;
         return false;
       };
-      const all = Array.from(document.querySelectorAll('a,button,[role=button],input[type=button],input[type=submit],label'));
-
-      const captcha = document.querySelector('iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, #captcha, [data-callback*=captcha]');
-      if (captcha) return { status: 'captcha', detail: 'CAPTCHA present — complete it yourself, then click Slow Download (not Vortex).' };
-
-      const body = (document.body && document.body.innerText || '').toLowerCase();
-      if (/sign in|log in|login to download|please log in/.test(body) && /nexus/.test(location.host)) {
-        const signIn = all.find(el => /^(sign in|log in)$/i.test(textOf(el)));
-        if (signIn) {
-          return { status: 'login', detail: 'Not logged in — sign in in this window (session will persist).' };
-        }
-      }
-
-      const clickEl = (el, outline) => {
-        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        el.style.outline = outline;
-        el.click();
+      const isFastOrPremium = (t) => /fast\\s*download/i.test(t) || (/^premium$/i.test(t));
+      const isSlowLabel = (t) => {
+        const s = (t || '').replace(/\\s+/g, ' ').trim();
+        // Exact Free-tier button label: "Slow download" (any case) ± trailing period
+        return /^slow\\s*downloads?\\.?$/i.test(s);
+      };
+      const isSlowLoose = (t) => {
+        const s = (t || '').replace(/\\s+/g, ' ').trim();
+        if (isFastOrPremium(s)) return false;
+        // Button or short control containing Slow download; exclude long marketing blurb
+        if (isSlowLabel(s)) return true;
+        if (/slow\\s*downloads?/i.test(s) && s.length <= 48 && !/fast\\s*download/i.test(s)) return true;
+        return false;
       };
 
-      // 1) Prefer Slow Download (free-user interstitial) — auto-click when enabled
-      const slow = all.find(el => /slow\\s*download/i.test(textOf(el)) && !isVortexish(el));
-      if (slow) {
-        const disabled = slow.disabled || slow.getAttribute('aria-disabled') === 'true' || /\\bdisabled\\b/i.test(slow.className || '');
-        const label = textOf(slow);
-        if (disabled || /\\d+\\s*s(ec)?/i.test(label) || /please wait/i.test(label)) {
-          slow.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          slow.style.outline = '3px solid #c9a227';
-          return { status: 'waiting-timer', detail: 'Slow Download timer — waiting to auto-click when it enables (or click yourself).' };
+      const clickEl = (el, outline) => {
+        try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
+        try { el.style.outline = outline; } catch (_) {}
+        try {
+          el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, view: window }));
+          el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+          el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+          el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        } catch (_) {}
+        try { if (typeof el.click === 'function') el.click(); } catch (_) {}
+      };
+
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) return false;
+        const st = window.getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+        return true;
+      };
+
+      // Broad clickable set — Nexus Free/Premium modal often uses div/span buttons, not <button>.
+      const selector = [
+        'a', 'button', '[role="button"]', 'input[type="button"]', 'input[type="submit"]', 'label',
+        '[class*="button"]', '[class*="Button"]', '[class*="btn"]',
+        '[class*="download"]', '[class*="Download"]',
+        '[data-testid*="download"]', '[data-testid*="Download"]',
+        'div', 'span'
+      ].join(',');
+
+      const collectRoots = () => {
+        const roots = [document];
+        for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
+          try {
+            if (iframe.contentDocument) roots.push(iframe.contentDocument);
+          } catch (_) {}
         }
-        clickEl(slow, '3px solid #6f9e6a');
-        return { status: 'clicked-slow', detail: 'Auto-clicked Slow Download.' };
+        return roots;
+      };
+
+      const captcha = document.querySelector('iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, #captcha, [data-callback*=captcha]');
+      if (captcha) return { status: 'captcha', detail: 'CAPTCHA present — complete it yourself, then click Slow download (not Fast/Premium).' };
+
+      // 1) Find Slow download candidates (exact label preferred, smallest visible hit target).
+      const slowCandidates = [];
+      for (const root of collectRoots()) {
+        let nodes;
+        try { nodes = Array.from(root.querySelectorAll(selector)); } catch (_) { nodes = []; }
+        for (const el of nodes) {
+          if (!visible(el) || isVortexish(el)) continue;
+          const t = textOf(el);
+          if (!t || isFastOrPremium(t)) continue;
+          if (!isSlowLoose(t)) continue;
+          // Skip huge containers that merely include the words (Free card copy: "Slow download. Wait more.")
+          const exact = isSlowLabel(t);
+          const headingOnly = /wait more/i.test(t) && !exact;
+          if (headingOnly && t.length > 40) continue;
+          const r = el.getBoundingClientRect();
+          slowCandidates.push({
+            el,
+            t,
+            exact: exact ? 1 : 0,
+            area: r.width * r.height,
+            // Prefer actual controls over plain text nodes wrapping the same words
+            tagScore: /^(BUTTON|A|INPUT)$/i.test(el.tagName) || el.getAttribute('role') === 'button' ? 2 : 0,
+          });
+        }
+      }
+      slowCandidates.sort((a, b) =>
+        (b.exact - a.exact) || (b.tagScore - a.tagScore) || (a.area - b.area)
+      );
+
+      const slow = slowCandidates[0];
+      if (slow) {
+        const el = slow.el;
+        const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true' || /\\bdisabled\\b/i.test(el.className || '');
+        const label = slow.t;
+        if (disabled || /\\d+\\s*s(ec)?\\b/i.test(label) || /please wait/i.test(label)) {
+          try { el.style.outline = '3px solid #c9a227'; } catch (_) {}
+          return { status: 'waiting-timer', detail: 'Slow download timer — waiting to auto-click when it enables.' };
+        }
+        clickEl(el, '3px solid #6f9e6a');
+        return { status: 'clicked-slow', detail: 'Auto-clicked Slow download ("' + label.slice(0, 40) + '").' };
       }
 
-      // 2) Manual / MANUAL (opens Slow Download for free users) — never Mod Manager / Vortex
-      const manual = all.find(el => {
-        if (isVortexish(el)) return false;
-        const t = textOf(el);
-        const h = hrefOf(el);
-        if (/[?&]nmm=0(?:&|$)/i.test(h)) return true;
-        return /^(manual(\\s*download)?|download\\s*manually)$/i.test(t) || /^manual$/i.test(t);
-      });
-      if (manual) {
-        clickEl(manual, '3px solid #c9a227');
-        return { status: 'clicked-manual', detail: 'Auto-clicked Manual Download — will auto-click Slow Download next.' };
+      // 2) Manual / MANUAL
+      for (const root of collectRoots()) {
+        let nodes;
+        try { nodes = Array.from(root.querySelectorAll(selector)); } catch (_) { nodes = []; }
+        const manual = nodes.find((el) => {
+          if (!visible(el) || isVortexish(el)) return false;
+          const t = textOf(el);
+          const h = hrefOf(el);
+          if (/[?&]nmm=0(?:&|$)/i.test(h)) return true;
+          return /^(manual(\\s*download)?|download\\s*manually)$/i.test(t) || /^manual$/i.test(t);
+        });
+        if (manual) {
+          clickEl(manual, '3px solid #c9a227');
+          return { status: 'clicked-manual', detail: 'Auto-clicked Manual Download — will auto-click Slow download next.' };
+        }
       }
 
-      // 3) On DownloadPopUp, a lone non-Vortex "Download" / "Free" control (not Mod Manager)
-      const freeDl = all.find(el => {
-        if (isVortexish(el)) return false;
-        const t = textOf(el);
-        const h = hrefOf(el);
-        if (/[?&]nmm=1(?:&|$)/i.test(h) || /nxm:/i.test(h)) return false;
-        return /^(download|free|start\\s*download|download\\s*now)$/i.test(t);
-      });
-      if (freeDl && /DownloadPopUp|file_id=|nmm=0/i.test(location.href + location.search)) {
-        clickEl(freeDl, '3px solid #6f9e6a');
-        return { status: 'clicked-slow', detail: 'Auto-clicked Download on Manual popup.' };
-      }
-
-      // Vortex present but no Manual yet — do not click it; keep searching
-      const vortexBtn = all.find(el => isVortexish(el));
-      if (vortexBtn) {
-        vortexBtn.style.outline = '3px solid #a33';
+      // 3) If page clearly shows Slow download text but we missed the control, keep searching (do not stop on Vortex).
+      const bodyText = (document.body && document.body.innerText || '');
+      if (/slow\\s*download/i.test(bodyText)) {
         return {
-          status: 'blocked-vortex',
-          detail: 'Ignoring Vortex / Mod Manager — still looking for Manual / Slow Download to auto-click.',
+          status: 'not-found',
+          detail: 'Saw "Slow download" on page but could not bind the button yet — retrying…',
         };
+      }
+
+      // Vortex only if Slow download is not on the page
+      for (const root of collectRoots()) {
+        let nodes;
+        try { nodes = Array.from(root.querySelectorAll('a,button,[role="button"]')); } catch (_) { nodes = []; }
+        const vortexBtn = nodes.find((el) => visible(el) && isVortexish(el));
+        if (vortexBtn) {
+          try { vortexBtn.style.outline = '3px solid #a33'; } catch (_) {}
+          return {
+            status: 'blocked-vortex',
+            detail: 'Ignoring Vortex / Mod Manager — still looking for Slow download (not Fast/Premium).',
+          };
+        }
       }
 
       return {
         status: 'not-found',
-        detail: 'Looking for Manual / Slow Download to auto-click…',
+        detail: 'Looking for Slow download to auto-click (never Fast/Premium/Vortex)…',
       };
     })()`) ) as {
       status:
