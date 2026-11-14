@@ -12,6 +12,13 @@ const BANNERLORD_GAME_ID = 3174
 let downloadHooked = false
 let lastCompletedDownload: { path: string; name: string; at: number } | null = null
 let activeDownloadPath: string | null = null
+let activeDownloadStats: {
+  path: string
+  name: string
+  receivedBytes: number
+  totalBytes: number
+  updatedAt: number
+} | null = null
 let lastBlockedProtocol: { url: string; at: number } | null = null
 
 export function getNexusSession() {
@@ -64,9 +71,39 @@ export function ensureNexusSessionConfigured(): void {
     const savePath = path.join(downloads, name)
     item.setSavePath(savePath)
     activeDownloadPath = savePath
+    activeDownloadStats = {
+      path: savePath,
+      name,
+      receivedBytes: 0,
+      totalBytes: Math.max(0, item.getTotalBytes() || 0),
+      updatedAt: Date.now(),
+    }
+    item.on('updated', (_e, state) => {
+      if (state === 'progressing' || state === 'interrupted') {
+        activeDownloadStats = {
+          path: savePath,
+          name,
+          receivedBytes: item.getReceivedBytes(),
+          totalBytes: Math.max(0, item.getTotalBytes() || 0),
+          updatedAt: Date.now(),
+        }
+      }
+    })
     item.once('done', (_e, state) => {
       if (state === 'completed' && fs.existsSync(savePath)) {
         lastCompletedDownload = { path: savePath, name, at: Date.now() }
+        try {
+          const size = fs.statSync(savePath).size
+          activeDownloadStats = {
+            path: savePath,
+            name,
+            receivedBytes: size,
+            totalBytes: size,
+            updatedAt: Date.now(),
+          }
+        } catch {
+          // ignore
+        }
       }
       if (activeDownloadPath === savePath) activeDownloadPath = null
     })
@@ -82,6 +119,16 @@ export function takeCompletedNexusDownload(sinceMs: number): { path: string; nam
 
 export function getActiveNexusDownloadPath(): string | null {
   return activeDownloadPath
+}
+
+export function getActiveNexusDownloadStats(): {
+  path: string
+  name: string
+  receivedBytes: number
+  totalBytes: number
+  updatedAt: number
+} | null {
+  return activeDownloadStats
 }
 
 export async function nexusSessionLooksLoggedIn(): Promise<boolean> {

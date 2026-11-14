@@ -6,15 +6,13 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { app } from 'electron'
 import { parseSubModuleXml } from './discovery'
 import { ensureAppDirs, resolvePaths } from './paths'
 import { getStoreSnapshot } from './profiles'
 import { ensureInVault } from './vault'
 
-const execFileAsync = promisify(execFile)
 const requireFromHere = createRequire(import.meta.url)
 
 export type ImportedModule = {
@@ -97,14 +95,42 @@ function resolveSevenZa(): string {
  * Extract .zip / .7z / .rar with bundled portable 7za only.
  * Expand-Archive is never used (cannot open .7z).
  */
-async function extractArchive(archivePath: string, destDir: string): Promise<string> {
+async function extractArchive(
+  archivePath: string,
+  destDir: string,
+  onProgress?: (percent: number | null, detail: string) => void,
+): Promise<string> {
   fs.mkdirSync(destDir, { recursive: true })
   const sevenZa = resolveSevenZa()
-  // x = extract with full paths; -y = yes; -aoa = overwrite all
-  await execFileAsync(sevenZa, ['x', archivePath, `-o${destDir}`, '-y', '-aoa'], {
-    windowsHide: true,
-    maxBuffer: 20 * 1024 * 1024,
+  onProgress?.(null, 'Extracting archive…')
+  // x = extract with full paths; -y = yes; -aoa = overwrite all; -bsp1 = progress on stdout
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(sevenZa, ['x', archivePath, `-o${destDir}`, '-y', '-aoa', '-bsp1'], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    const onChunk = (buf: Buffer) => {
+      const text = buf.toString('utf8')
+      // 7za progress lines often look like "  34%" or include "%"
+      const m = text.match(/(\d{1,3})\s*%/)
+      if (m) {
+        const pct = Math.max(0, Math.min(99, Number(m[1])))
+        onProgress?.(pct, `Extracting… ${pct}%`)
+      }
+    }
+    child.stdout?.on('data', onChunk)
+    child.stderr?.on('data', (buf: Buffer) => {
+      stderr += buf.toString('utf8')
+      onChunk(buf)
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`7za extract failed (code ${code}): ${stderr.slice(0, 240)}`))
+    })
   })
+  onProgress?.(100, 'Extract complete')
   return sevenZa
 }
 
@@ -216,7 +242,16 @@ function vaultRoots(roots: string[]): ImportedModule[] {
   return modules
 }
 
-export async function importZipToVault(archivePath: string): Promise<ImportArchiveResult> {
+export async function importZipToVault(
+  archivePath: string,
+  options?: {
+    onProgress?: (update: {
+      step: 'extract' | 'import'
+      percent: number | null
+      detail: string
+    }) => void
+  },
+): Promise<ImportArchiveResult> {
   ensureAppDirs()
   if (!fs.existsSync(archivePath)) {
     return { ok: false, modules: [], error: 'Archive not found.' }
@@ -231,17 +266,25 @@ export async function importZipToVault(archivePath: string): Promise<ImportArchi
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-mod-'))
   try {
-    const sevenZa = await extractArchive(archivePath, tmp)
+    const sevenZa = await extractArchive(archivePath, tmp, (percent, detail) => {
+      options?.onProgress?.({ step: 'extract', percent, detail })
+    })
     const extractor = `7za:${sevenZa}`
+    options?.onProgress?.({ step: 'import', percent: 70, detail: 'Scanning modules…' })
     const roots = findModuleRoots(tmp)
     if (roots.length > 0) {
-      return { ok: true, modules: vaultRoots(roots), kind: 'module', extractor }
+      options?.onProgress?.({ step: 'import', percent: 85, detail: 'Copying into vault…' })
+      const modules = vaultRoots(roots)
+      options?.onProgress?.({ step: 'import', percent: 100, detail: 'Import complete' })
+      return { ok: true, modules, kind: 'module', extractor }
     }
 
     // BLSE and similar: bin overlay with Bannerlord.BLSE.*.exe, no SubModule.xml
     if (findBlseBinRoot(tmp)) {
+      options?.onProgress?.({ step: 'import', percent: 85, detail: 'Installing BLSE overlay…' })
       const blse = installBlseOverlay(tmp)
       if (!blse.ok) return { ok: false, modules: [], error: blse.error, kind: 'blse', extractor }
+      options?.onProgress?.({ step: 'import', percent: 100, detail: 'BLSE installed' })
       // Not a Modules/ SubModule — installed into game bin/. Caller may set requiresBlse.
       return { ok: true, kind: 'blse', modules: [], extractor }
     }

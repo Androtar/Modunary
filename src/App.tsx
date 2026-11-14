@@ -1537,7 +1537,33 @@ export default function App() {
                           )}
                         </div>
                         <ul className="activate-progress" style={{ maxHeight: 220, overflow: 'auto' }}>
-                          {collectionProgress.items.map((item, itemIndex) => (
+                          {collectionProgress.items.map((item, itemIndex) => {
+                            const isCurrent =
+                              itemIndex === collectionProgress.index &&
+                              (item.status === 'waiting-user' ||
+                                item.status === 'downloading' ||
+                                item.status === 'importing' ||
+                                collectionProgress.active)
+                            const showBar =
+                              item.status === 'error' ||
+                              (isCurrent &&
+                                (item.status === 'downloading' ||
+                                  item.status === 'waiting-user' ||
+                                  item.status === 'importing' ||
+                                  item.progressStep === 'download' ||
+                                  item.progressStep === 'extract' ||
+                                  item.progressStep === 'import'))
+                            const indeterminate =
+                              item.status !== 'error' &&
+                              (item.progressPercent == null ||
+                                Number.isNaN(item.progressPercent))
+                            const pct =
+                              item.status === 'error'
+                                ? 100
+                                : indeterminate
+                                  ? 0
+                                  : Math.max(0, Math.min(100, Number(item.progressPercent)))
+                            return (
                             <li
                               key={`${item.modId}-${item.fileId || 0}-${itemIndex}`}
                               className={
@@ -1561,16 +1587,70 @@ export default function App() {
                                       ? '!'
                                       : '○'}
                               </span>
-                              <span>
-                                {item.name}
-                                <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>
-                                  {item.status}
-                                  {item.method ? ` · ${item.method}` : ''}
-                                  {item.error ? ` — ${item.error}` : ''}
+                              <span className="collection-mod-row">
+                                <span>
+                                  {item.name}
+                                  <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>
+                                    {item.status}
+                                    {item.method ? ` · ${item.method}` : ''}
+                                    {item.error ? ` — ${item.error}` : ''}
+                                  </span>
                                 </span>
+                                {showBar && (
+                                  <div
+                                    className={`collection-mod-progress${
+                                      item.status === 'error' ? ' is-error' : ''
+                                    }${indeterminate ? ' is-indeterminate' : ''}`}
+                                    role="progressbar"
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    aria-valuenow={indeterminate ? undefined : pct}
+                                    aria-label={
+                                      item.status === 'error'
+                                        ? 'Error'
+                                        : item.progressDetail || item.message || 'Progress'
+                                    }
+                                  >
+                                    <div
+                                      className="collection-mod-progress-track"
+                                      aria-hidden
+                                    >
+                                      <div
+                                        className="collection-mod-progress-fill"
+                                        style={
+                                          indeterminate || item.status === 'error'
+                                            ? undefined
+                                            : { width: `${pct}%` }
+                                        }
+                                      />
+                                    </div>
+                                    <div className="collection-mod-progress-meta">
+                                      {item.status === 'error'
+                                        ? item.error || item.progressDetail || 'Error'
+                                        : [
+                                            item.progressStep === 'download'
+                                              ? 'Download'
+                                              : item.progressStep === 'extract'
+                                                ? 'Extract'
+                                                : item.progressStep === 'import'
+                                                  ? 'Import'
+                                                  : item.status === 'importing'
+                                                    ? 'Import'
+                                                    : 'Download',
+                                            indeterminate
+                                              ? null
+                                              : `${pct}%`,
+                                            item.progressDetail || null,
+                                          ]
+                                            .filter(Boolean)
+                                            .join(' · ')}
+                                    </div>
+                                  </div>
+                                )}
                               </span>
                             </li>
-                          ))}
+                            )
+                          })}
                         </ul>
                       </div>
                     )}

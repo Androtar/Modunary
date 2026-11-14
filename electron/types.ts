@@ -125,6 +125,13 @@ export type CollectionInstallItemStatus =
   | 'skipped'
   | 'error'
 
+export type CollectionItemProgressStep =
+  | 'download'
+  | 'extract'
+  | 'import'
+  | 'error'
+  | null
+
 export interface CollectionInstallItem {
   modId: number
   fileId: number
@@ -135,6 +142,12 @@ export interface CollectionInstallItem {
   message: string
   error: string | null
   method: 'premium' | 'slow-download' | null
+  /** Current sub-step for the status bar under this mod. */
+  progressStep?: CollectionItemProgressStep
+  /** 0–100 when known; null = indeterminate (e.g. download size unknown). */
+  progressPercent?: number | null
+  /** Short label under the bar, e.g. "12.4 / 48 MB" or "Extracting…". */
+  progressDetail?: string | null
 }
 
 export type CollectionInstallStage =

@@ -21,6 +21,7 @@ import {
   createNexusBrowser,
   ensureNexusSessionConfigured,
   getActiveNexusDownloadPath,
+  getActiveNexusDownloadStats,
   injectNexusGuideBanner,
   manualDownloadPopupUrl,
   modFilesUrl,
@@ -102,6 +103,40 @@ function broadcast(progress: CollectionInstallProgress): void {
       // ignore
     }
   }
+}
+
+function formatProgressBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '0 B'
+  if (n < 1024) return `${Math.round(n)} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function setCurrentItemProgress(
+  update: {
+    progressStep?: CollectionInstallItem['progressStep']
+    progressPercent?: number | null
+    progressDetail?: string | null
+    status?: CollectionInstallItem['status']
+    message?: string
+    error?: string | null
+  },
+  stage?: CollectionInstallProgress['stage'],
+): void {
+  if (!session) return
+  const item = session.items[session.index]
+  if (!item) return
+  if (update.progressStep !== undefined) item.progressStep = update.progressStep
+  if (update.progressPercent !== undefined) item.progressPercent = update.progressPercent
+  if (update.progressDetail !== undefined) item.progressDetail = update.progressDetail
+  if (update.status !== undefined) item.status = update.status
+  if (update.message !== undefined) item.message = update.message
+  if (update.error !== undefined) item.error = update.error
+  emit({
+    stage: stage || (item.status === 'importing' ? 'installing' : 'waiting-download'),
+    message: item.message,
+  })
 }
 
 function emit(partial?: Partial<CollectionInstallProgress>): void {
@@ -371,7 +406,24 @@ async function manualSlowDownloadInstall(
       item.status = 'importing'
       item.message = `Re-importing existing ${recent.name} with 7za…`
       emit({ stage: 'installing', message: item.message })
-      const imported = await importZipToVault(recent.path)
+      setCurrentItemProgress({
+        status: 'importing',
+        progressStep: 'extract',
+        progressPercent: null,
+        progressDetail: 'Extracting…',
+        message: `Re-importing existing ${recent.name} with 7za…`,
+      }, 'installing')
+      const imported = await importZipToVault(recent.path, {
+        onProgress: (p) => {
+          setCurrentItemProgress({
+            status: 'importing',
+            progressStep: p.step,
+            progressPercent: p.percent,
+            progressDetail: p.detail,
+            message: `${p.detail} (${recent.name})`,
+          }, 'installing')
+        },
+      })
       if (imported.ok) {
         // Reject BLSE overlay when this collection row is a normal module.
         if (imported.kind === 'blse' && !isBlseCollectionMod(mod)) {
@@ -510,6 +562,13 @@ async function manualSlowDownloadInstall(
     }
   })()
 
+  setCurrentItemProgress({
+    status: 'downloading',
+    progressStep: 'download',
+    progressPercent: null,
+    progressDetail: 'Waiting for download…',
+  }, 'waiting-download')
+
   const folderResult = await waitForNewDownload({
     sinceMs,
     timeoutMs: 20 * 60 * 1000,
@@ -529,6 +588,17 @@ async function manualSlowDownloadInstall(
         return Boolean(session?.skipCurrent)
       },
     },
+    getLiveBytes: () => {
+      const s = getActiveNexusDownloadStats()
+      if (!s) return null
+      return {
+        path: s.path,
+        name: s.name,
+        received: s.receivedBytes,
+        total: s.totalBytes,
+      }
+    },
+    getExpectedTotalBytes: () => getActiveNexusDownloadStats()?.totalBytes || 0,
     onProgress: (message) => {
       if (!session || stopAssist) return
       const cur = session.items[session.index]
@@ -547,6 +617,27 @@ async function manualSlowDownloadInstall(
       emit({ stage: 'waiting-download', message: text })
       void injectNexusGuideBanner(win, text.startsWith('ACTION') ? text : `Modunary: ${text}`)
     },
+    onStats: (stats) => {
+      if (!session || stopAssist) return
+      const total = stats.totalBytes > 0 ? stats.totalBytes : 0
+      const pct =
+        total > 0
+          ? Math.max(0, Math.min(99, Math.round((stats.bytes / total) * 100)))
+          : null
+      const detail =
+        total > 0
+          ? `${formatProgressBytes(stats.bytes)} / ${formatProgressBytes(total)}`
+          : stats.bytes > 0
+            ? `${formatProgressBytes(stats.bytes)} downloaded…`
+            : stats.message
+      setCurrentItemProgress({
+        status: stats.phase === 'ready' ? 'importing' : 'downloading',
+        progressStep: 'download',
+        progressPercent: stats.phase === 'ready' && total > 0 ? 100 : pct,
+        progressDetail: detail,
+        message: stats.message,
+      }, 'waiting-download')
+    },
   })
   stopAssist = true
 
@@ -557,12 +648,41 @@ async function manualSlowDownloadInstall(
       : takeCompletedNexusDownload(sinceMs))
 
   if (archive) {
-    item.status = 'importing'
-    item.message = `Importing ${archive.name}…`
-    emit({ stage: 'installing', message: item.message })
-    const imported = await importZipToVault(archive.path)
-    if (!imported.ok) return { ok: false, error: imported.error }
-    item.message = `Imported ${archive.name} (${imported.extractor || '7za'})`
+    setCurrentItemProgress({
+      status: 'importing',
+      progressStep: 'extract',
+      progressPercent: null,
+      progressDetail: 'Extracting…',
+      message: `Importing ${archive.name}…`,
+    }, 'installing')
+    const imported = await importZipToVault(archive.path, {
+      onProgress: (p) => {
+        setCurrentItemProgress({
+          status: 'importing',
+          progressStep: p.step,
+          progressPercent: p.percent,
+          progressDetail: p.detail,
+          message: `${p.detail} (${archive.name})`,
+        }, 'installing')
+      },
+    })
+    if (!imported.ok) {
+      setCurrentItemProgress({
+        status: 'error',
+        progressStep: 'error',
+        progressPercent: null,
+        progressDetail: imported.error || 'Import failed',
+        error: imported.error || 'Import failed',
+        message: imported.error || 'Import failed',
+      }, 'paused')
+      return { ok: false, error: imported.error }
+    }
+    setCurrentItemProgress({
+      progressStep: 'import',
+      progressPercent: 100,
+      progressDetail: 'Import complete',
+      message: `Imported ${archive.name} (${imported.extractor || '7za'})`,
+    }, 'installing')
     return { ok: true, modules: imported.modules, kind: imported.kind }
   }
 
@@ -584,6 +704,9 @@ async function installOne(
   item.status = 'downloading'
   item.message = 'Trying Premium CDN…'
   item.error = null
+  item.progressStep = 'download'
+  item.progressPercent = null
+  item.progressDetail = 'Starting…'
   emit({ stage: 'installing', message: item.message })
 
   const premium = await tryPremiumInstall(mod)
@@ -616,6 +739,9 @@ async function installOne(
     item.status = 'error'
     item.error = manual.error || 'Manual install failed'
     item.message = item.error
+    item.progressStep = 'error'
+    item.progressPercent = null
+    item.progressDetail = item.error
     return
   }
   if (manual.kind === 'blse') {
@@ -804,6 +930,9 @@ export async function startCollectionInstall(input: {
     message: '',
     error: null,
     method: null,
+    progressStep: null,
+    progressPercent: null,
+    progressDetail: null,
   }))
 
   session = {
