@@ -1,0 +1,40 @@
+{
+  "name": "bannerlord-mod-profiles",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Desktop app for Mount & Blade II: Bannerlord mod profiles",
+  "author": "Stephen",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "electron:dev": "vite",
+    "start": "vite"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.12.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "uuid": "^14.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.7",
+    "cross-env": "^10.1.0",
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0",
+    "oxlint": "^1.90.0",
+    "typescript": "~7.0.2",
+    "vite": "^8.3.6",
+    "vite-plugin-electron": "^1.2.0",
+    "vite-plugin-electron-renderer": "^1.0.0",
+    "wait-on": "^9.5.1"
+  }
+}
