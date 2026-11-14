@@ -47,7 +47,7 @@ import {
   searchSteamWorkshop,
 } from './services/stores/steamWorkshop'
 import { importModulesIntoVault, listVaultModules } from './services/vault'
-import type { ActivateOptions } from './types'
+import type { ActivateOptions, ActivateProgressEvent } from './types'
 
 type SecretsPatch = {
   nexusApiKey?: string
@@ -381,9 +381,12 @@ function registerIpc() {
   )
   ipcMain.handle(
     'profiles:activate',
-    wrapIpc('profiles:activate', (_e, id: string, options?: ActivateOptions) =>
-      activateProfile(id, options),
-    ),
+    wrapIpc('profiles:activate', (e, id: string, options?: ActivateOptions) => {
+      const sender = e.sender
+      return activateProfile(id, options, (progress: ActivateProgressEvent) => {
+        if (!sender.isDestroyed()) sender.send('activate:progress', progress)
+      })
+    }),
   )
   ipcMain.handle(
     'profiles:launch',

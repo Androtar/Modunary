@@ -1,6 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { ActivateOptions, ActivateResult, ModProfile } from '../types'
+import type {
+  ActivateOptions,
+  ActivateProgressEvent,
+  ActivateResult,
+  ModProfile,
+} from '../types'
 import { discoverGame } from './discovery'
 import { backupLauncherData, writeLauncherData } from './launcherData'
 import { getBackupsPath } from './paths'
@@ -11,6 +16,8 @@ import {
   resolveDesiredBetaKey,
 } from './steamVersion'
 import { deployProfileVault, importModulesIntoVault } from './vault'
+
+export type ActivateProgressReporter = (event: ActivateProgressEvent) => void
 
 function versionMismatch(
   profile: ModProfile,
@@ -30,12 +37,21 @@ function versionMismatch(
   return !compareLooseVersion(detected, profile.gameVersion)
 }
 
+function report(onProgress: ActivateProgressReporter | undefined, event: ActivateProgressEvent) {
+  try {
+    onProgress?.(event)
+  } catch {
+    // UI progress must never break activate.
+  }
+}
+
 /**
  * Activate a profile: optional version-switch gate, vault deploy, LauncherData write.
  */
 export async function activateProfile(
   profileId: string,
   options: ActivateOptions = {},
+  onProgress?: ActivateProgressReporter,
 ): Promise<ActivateResult> {
   const store = loadStore()
   const profile = store.profiles.find((p) => p.id === profileId)
@@ -79,6 +95,10 @@ export async function activateProfile(
 
   // Continue path: optionally save unsaved current profile as a copy first.
   if (options.saveUnsavedAs?.trim()) {
+    report(onProgress, {
+      phase: 'saving',
+      message: 'Saving current profile…',
+    })
     const name = options.saveUnsavedAs.trim()
     const currentId = store.activeProfileId
     if (currentId && currentId !== profile.id) {
@@ -109,11 +129,23 @@ export async function activateProfile(
     store.allowSteamBetaKeyWrite !== false
   ) {
     const betaKey = resolveDesiredBetaKey(profile.gameVersion, profile.steamBetaBranch)
+    const versionLabel =
+      profile.gameVersion && profile.gameVersion !== 'unknown'
+        ? profile.gameVersion.replace(/^v/i, '')
+        : betaKey || 'requested'
+    report(onProgress, {
+      phase: 'installing-version',
+      message: `Installing version ${versionLabel}…`,
+    })
     const switchResult = await attemptSteamVersionSwitch(discovery.installPath, betaKey)
     steamVersionSwitchAttempted = switchResult.attempted
     steamVersionSwitchOk = switchResult.ok
     versionNotes.push(...switchResult.notes)
   } else if (mismatch && options.confirmVersionSwitch) {
+    report(onProgress, {
+      phase: 'installing-version',
+      message: `Version ${profile.gameVersion.replace(/^v/i, '')} confirmed (Steam BetaKey write disabled)…`,
+    })
     versionNotes.push(
       'Version switch confirmed, but Steam BetaKey write is disabled in settings. Switch Betas manually in Steam.',
     )
@@ -124,6 +156,11 @@ export async function activateProfile(
         : 'No game version detected; proceeding with vault + launcher deploy.',
     )
   }
+
+  report(onProgress, {
+    phase: 'activating-mods',
+    message: 'Activating mods…',
+  })
 
   // Ensure current Modules community mods are vaulted before we park/redeploy.
   if (discovery.modulesPath) {
@@ -147,6 +184,11 @@ export async function activateProfile(
       )
     }
   }
+
+  report(onProgress, {
+    phase: 'writing-launcher',
+    message: 'Writing launcher data…',
+  })
 
   let backupPath: string | null = null
   if (profileLive.settings.autoBackupLauncherData !== false) {
@@ -180,6 +222,11 @@ export async function activateProfile(
   const target = storeLive.profiles.find((p) => p.id === profileLive.id)
   if (target) target.dirty = false
   saveStore(storeLive)
+
+  report(onProgress, {
+    phase: 'done',
+    message: 'Done',
+  })
 
   return {
     ok: warnings.length === 0,

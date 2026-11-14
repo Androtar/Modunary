@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   ActivateOptions,
+  ActivateProgressEvent,
   ActivateResult,
   AppStore,
   CreateProfileInput,
@@ -50,6 +51,7 @@ export interface BannerlordApi {
     enabled?: boolean,
   ) => Promise<ModProfile>
   activateProfile: (id: string, options?: ActivateOptions) => Promise<ActivateResult>
+  onActivateProgress: (handler: (event: ActivateProgressEvent) => void) => () => void
   launchProfile: (id: string) => Promise<LaunchResult>
   setPaths: (gameInstallPath: string | null, documentsPath: string | null) => Promise<AppStore>
   setAllowSteamBetaKeyWrite: (allow: boolean) => Promise<AppStore>
@@ -113,6 +115,15 @@ const api: BannerlordApi = {
   addModules: (id, modules, enabled) =>
     ipcRenderer.invoke('profiles:addModules', id, modules, enabled),
   activateProfile: (id, options) => ipcRenderer.invoke('profiles:activate', id, options),
+  onActivateProgress: (handler) => {
+    const listener = (_event: unknown, data: ActivateProgressEvent) => {
+      handler(data)
+    }
+    ipcRenderer.on('activate:progress', listener)
+    return () => {
+      ipcRenderer.removeListener('activate:progress', listener)
+    }
+  },
   launchProfile: (id) => ipcRenderer.invoke('profiles:launch', id),
   setPaths: (gameInstallPath, documentsPath) =>
     ipcRenderer.invoke('paths:set', gameInstallPath, documentsPath),

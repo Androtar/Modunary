@@ -536,6 +536,49 @@ button {
   margin: 0.35rem 0;
 }
 
+.activate-progress {
+  list-style: none;
+  margin: 0.85rem 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.activate-progress li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  font-size: 0.92rem;
+  color: var(--text-muted);
+}
+
+.activate-progress li.done {
+  color: var(--ok);
+}
+
+.activate-progress li.current {
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+
+.activate-progress li.error {
+  color: #f0c4bc;
+  font-weight: 650;
+}
+
+.activate-progress-mark {
+  width: 1rem;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.activate-progress-live {
+  margin: 0.55rem 0 0;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
 @media (max-width: 960px) {
   .app-shell {
     grid-template-columns: 1fr;

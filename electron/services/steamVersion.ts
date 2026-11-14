@@ -87,24 +87,51 @@ export async function attemptSteamVersionSwitch(
 
   try {
     const steamExe = findSteamExe()
-    if (steamExe) {
-      try {
-        await execFileAsync(steamExe, [`steam://validate/${STEAM_APP_ID}`], {
-          windowsHide: true,
-        })
-      } catch {
-        await execFileAsync('cmd', ['/c', `start steam://validate/${STEAM_APP_ID}`], {
-          windowsHide: true,
-        })
+    // Steam may keep the protocol handler open while downloading — cap wait so Activate can finish.
+    const withTimeout = <T>(p: Promise<T>, ms: number) =>
+      Promise.race([
+        p,
+        new Promise<T>((_, reject) => {
+          setTimeout(() => reject(new Error('Steam validate trigger timed out')), ms)
+        }),
+      ])
+    try {
+      if (steamExe) {
+        try {
+          await withTimeout(
+            execFileAsync(steamExe, [`steam://validate/${STEAM_APP_ID}`], {
+              windowsHide: true,
+            }),
+            8000,
+          )
+        } catch {
+          await withTimeout(
+            execFileAsync('cmd', ['/c', `start "" steam://validate/${STEAM_APP_ID}`], {
+              windowsHide: true,
+            }),
+            5000,
+          )
+        }
+      } else {
+        await withTimeout(
+          execFileAsync('cmd', ['/c', `start "" steam://validate/${STEAM_APP_ID}`], {
+            windowsHide: true,
+          }),
+          5000,
+        )
       }
-    } else {
-      await execFileAsync('cmd', ['/c', `start steam://validate/${STEAM_APP_ID}`], {
+      notes.push(
+        'Requested Steam validate/update for Bannerlord. Steam may keep downloading in the background — watch Steam if the branch does not change immediately.',
+      )
+    } catch {
+      // Fire-and-forget fallback: don't block Activate on Steam's download.
+      void execFileAsync('cmd', ['/c', `start "" steam://validate/${STEAM_APP_ID}`], {
         windowsHide: true,
-      })
+      }).catch(() => undefined)
+      notes.push(
+        'Triggered Steam validate (non-blocking). If the branch does not change, fully exit Steam and reopen, then confirm Betas in Properties.',
+      )
     }
-    notes.push(
-      'Requested Steam validate/update for Bannerlord. If the branch does not change, fully exit Steam and reopen, then confirm Betas in Properties.',
-    )
   } catch {
     notes.push(
       'BetaKey written, but could not trigger Steam update automatically. Open Steam → Bannerlord → Properties → Betas.',

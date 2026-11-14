@@ -137,6 +137,19 @@ export interface ActivateOptions {
   attemptSteamVersionSwitch?: boolean
 }
 
+export type ActivateProgressPhase =
+  | 'saving'
+  | 'installing-version'
+  | 'activating-mods'
+  | 'writing-launcher'
+  | 'done'
+  | 'error'
+
+export interface ActivateProgressEvent {
+  phase: ActivateProgressPhase
+  message: string
+}
+
 export interface ActivateResult {
   ok: boolean
   profileId: string

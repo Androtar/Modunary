@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
+  ActivateProgressEvent,
+  ActivateProgressPhase,
   ActivateResult,
   AppStore,
   GameDiscovery,
@@ -52,6 +54,11 @@ export default function App() {
     profileId: string
     requiredVersion: string
     currentVersion: string | null
+    stage: 'confirm' | 'progress' | 'done' | 'error'
+    progressPhase: ActivateProgressPhase | null
+    progressMessage: string
+    error: string | null
+    summary: string | null
   } | null>(null)
   const [saveAsName, setSaveAsName] = useState('')
 
@@ -208,6 +215,11 @@ export default function App() {
         profileId,
         requiredVersion: result.requiredVersion || profile.gameVersion,
         currentVersion: result.currentVersion ?? null,
+        stage: 'confirm',
+        progressPhase: null,
+        progressMessage: '',
+        error: null,
+        summary: null,
       })
       setSaveAsName('')
       return
@@ -225,7 +237,7 @@ export default function App() {
   }
 
   async function onVersionContinue() {
-    if (!versionModal || !store) return
+    if (!versionModal || !store || versionModal.stage !== 'confirm') return
     const current = store.profiles.find((p) => p.id === store.activeProfileId)
     const needsSave =
       current &&
@@ -245,21 +257,102 @@ export default function App() {
       saveUnsavedAs = name
     }
 
-    await withBusy(async () => {
-      await runActivate(versionModal.profileId, {
+    const profile = store.profiles.find((p) => p.id === versionModal.profileId)
+    const profileId = versionModal.profileId
+    const requiredVersion = versionModal.requiredVersion
+
+    // Immediately leave confirm UI — no Cancel mid-flight.
+    setVersionModal({
+      profileId,
+      requiredVersion,
+      currentVersion: versionModal.currentVersion,
+      stage: 'progress',
+      progressPhase: saveUnsavedAs ? 'saving' : 'installing-version',
+      progressMessage: saveUnsavedAs
+        ? 'Saving current profile…'
+        : `Installing version ${requiredVersion.replace(/^v/i, '')}…`,
+      error: null,
+      summary: null,
+    })
+    setBusy(true)
+    setMessage(null)
+
+    const unsub = window.bannerlord.onActivateProgress((ev: ActivateProgressEvent) => {
+      setVersionModal((prev) =>
+        prev && (prev.stage === 'progress' || prev.stage === 'confirm')
+          ? {
+              ...prev,
+              stage: 'progress',
+              progressPhase: ev.phase === 'done' || ev.phase === 'error' ? prev.progressPhase : ev.phase,
+              progressMessage: ev.message,
+            }
+          : prev,
+      )
+    })
+
+    try {
+      const result = await window.bannerlord.activateProfile(profileId, {
         confirmVersionSwitch: true,
         saveUnsavedAs,
         attemptSteamVersionSwitch: true,
       })
-    })
+      await refresh()
+      const lines = [
+        profile ? `Activated "${profile.name}".` : 'Activated profile.',
+        `Wrote: ${result.launcherDataPath}`,
+        result.backupPath ? `Backup: ${result.backupPath}` : null,
+        ...result.versionNotes,
+        ...result.vaultNotes,
+        ...result.warnings,
+      ].filter(Boolean)
+      const summary = lines.join('\n')
+      setVersionModal({
+        profileId,
+        requiredVersion,
+        currentVersion: versionModal.currentVersion,
+        stage: 'done',
+        progressPhase: 'done',
+        progressMessage: 'Done',
+        error: null,
+        summary,
+      })
+      setMessage({
+        kind: result.warnings.length ? 'warn' : 'ok',
+        text: summary,
+      })
+    } catch (err) {
+      const text = err instanceof Error ? err.message : String(err)
+      setVersionModal((prev) => ({
+        profileId,
+        requiredVersion,
+        currentVersion: versionModal.currentVersion,
+        stage: 'error',
+        progressPhase:
+          prev?.progressPhase && prev.progressPhase !== 'done' && prev.progressPhase !== 'error'
+            ? prev.progressPhase
+            : 'installing-version',
+        progressMessage: 'Failed',
+        error: text,
+        summary: null,
+      }))
+      setMessage({ kind: 'error', text })
+    } finally {
+      unsub()
+      setBusy(false)
+    }
   }
 
   function onVersionCancel() {
+    if (versionModal && versionModal.stage !== 'confirm') return
     setVersionModal(null)
     setMessage({
       kind: 'ok',
       text: 'Version switch cancelled. Nothing was changed.',
     })
+  }
+
+  function onVersionClose() {
+    setVersionModal(null)
   }
 
   async function onLaunch() {
@@ -1564,37 +1657,128 @@ export default function App() {
       {versionModal && (
         <div className="modal-backdrop">
           <div className="modal">
-            <h2>Version switch required</h2>
-            <p>
-              This profile requires version <strong>{versionModal.requiredVersion}</strong>,
-              switching now.
-            </p>
-            <p className="sub">
-              Current install reports {versionModal.currentVersion ?? 'unknown'}. Continue will
-              deactivate the current profile, activate this one (vault deploy + LauncherData), and
-              attempt a Steam BetaKey switch.
-            </p>
-            {dirtyCurrent && (
-              <div className="field" style={{ margin: '0.75rem 0' }}>
-                <label htmlFor="saveAs">
-                  Current profile “{activeProfile?.name}” has unsaved changes — save as:
-                </label>
-                <input
-                  id="saveAs"
-                  value={saveAsName}
-                  onChange={(e) => setSaveAsName(e.target.value)}
-                  placeholder="New profile name"
-                />
-              </div>
+            {versionModal.stage === 'confirm' ? (
+              <>
+                <h2>Version switch required</h2>
+                <p>
+                  This profile requires version <strong>{versionModal.requiredVersion}</strong>,
+                  switching now.
+                </p>
+                <p className="sub">
+                  Current install reports {versionModal.currentVersion ?? 'unknown'}. Continue will
+                  deactivate the current profile, activate this one (vault deploy + LauncherData), and
+                  attempt a Steam BetaKey switch.
+                </p>
+                {dirtyCurrent && (
+                  <div className="field" style={{ margin: '0.75rem 0' }}>
+                    <label htmlFor="saveAs">
+                      Current profile “{activeProfile?.name}” has unsaved changes — save as:
+                    </label>
+                    <input
+                      id="saveAs"
+                      value={saveAsName}
+                      onChange={(e) => setSaveAsName(e.target.value)}
+                      placeholder="New profile name"
+                    />
+                  </div>
+                )}
+                <div className="toolbar-group">
+                  <button className="btn primary" disabled={busy} onClick={() => void onVersionContinue()}>
+                    Continue
+                  </button>
+                  <button className="btn" disabled={busy} onClick={onVersionCancel}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2>
+                  {versionModal.stage === 'error'
+                    ? 'Activation failed'
+                    : versionModal.stage === 'done'
+                      ? 'Activation complete'
+                      : 'Activating…'}
+                </h2>
+                <p className="sub">
+                  Target version <strong>{versionModal.requiredVersion.replace(/^v/i, '')}</strong>
+                  {versionModal.currentVersion
+                    ? ` · was ${versionModal.currentVersion}`
+                    : ''}
+                </p>
+                <ul className="activate-progress">
+                  {(
+                    [
+                      ['saving', 'Saving current profile…'],
+                      ['installing-version', `Installing version ${versionModal.requiredVersion.replace(/^v/i, '')}…`],
+                      ['activating-mods', 'Activating mods…'],
+                      ['writing-launcher', 'Writing launcher data…'],
+                      ['done', 'Done'],
+                    ] as const
+                  ).map(([phase, label]) => {
+                    const order = [
+                      'saving',
+                      'installing-version',
+                      'activating-mods',
+                      'writing-launcher',
+                      'done',
+                    ] as const
+                    const currentIdx = versionModal.progressPhase
+                      ? order.indexOf(
+                          versionModal.progressPhase === 'error'
+                            ? 'installing-version'
+                            : (versionModal.progressPhase as (typeof order)[number]),
+                        )
+                      : -1
+                    const phaseIdx = order.indexOf(phase)
+                    const isFailedStep =
+                      versionModal.stage === 'error' && versionModal.progressPhase === phase
+                    const isCurrent =
+                      versionModal.stage === 'progress' && versionModal.progressPhase === phase
+                    const isDone =
+                      versionModal.stage === 'done' ||
+                      (currentIdx >= 0 && phaseIdx >= 0 && phaseIdx < currentIdx)
+                    return (
+                      <li
+                        key={phase}
+                        className={
+                          isFailedStep
+                            ? 'error'
+                            : isCurrent
+                              ? 'current'
+                              : isDone
+                                ? 'done'
+                                : 'pending'
+                        }
+                      >
+                        <span className="activate-progress-mark" aria-hidden>
+                          {isFailedStep ? '!' : isDone && !isCurrent ? '✓' : isCurrent ? '●' : '○'}
+                        </span>
+                        <span>{label}</span>
+                      </li>
+                    )
+                  })}
+                </ul>
+                {versionModal.stage === 'progress' && (
+                  <p className="activate-progress-live">{versionModal.progressMessage}</p>
+                )}
+                {versionModal.stage === 'error' && versionModal.error && (
+                  <div className="callout error">{versionModal.error}</div>
+                )}
+                {versionModal.stage === 'done' && versionModal.summary && (
+                  <div className="callout ok" style={{ whiteSpace: 'pre-wrap' }}>
+                    {versionModal.summary}
+                  </div>
+                )}
+                <div className="toolbar-group" style={{ marginTop: '0.9rem' }}>
+                  {(versionModal.stage === 'done' || versionModal.stage === 'error') && (
+                    <button className="btn primary" onClick={onVersionClose}>
+                      Close
+                    </button>
+                  )}
+                </div>
+              </>
             )}
-            <div className="toolbar-group">
-              <button className="btn primary" disabled={busy} onClick={onVersionContinue}>
-                Continue
-              </button>
-              <button className="btn" disabled={busy} onClick={onVersionCancel}>
-                Cancel
-              </button>
-            </div>
           </div>
         </div>
       )}
