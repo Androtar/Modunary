@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
+  ActivateLockState,
   ActivateProgressEvent,
   ActivateProgressPhase,
   ActivateResult,
@@ -40,6 +41,13 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('mods')
   const [busy, setBusy] = useState(false)
+  const [activateLock, setActivateLock] = useState<ActivateLockState | null>(null)
+  const activateLaunchBlocked = Boolean(activateLock?.blocked)
+  const activateLaunchTip =
+    activateLock?.tooltip ||
+    (activateLaunchBlocked
+      ? 'Steam is installing/validating/updating Bannerlord (or Modunary activate in progress)'
+      : undefined)
   const [booting, setBooting] = useState(true)
   const [bootError, setBootError] = useState<string | null>(null)
   const [message, setMessage] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(
@@ -231,6 +239,13 @@ export default function App() {
 
   async function onActivate() {
     if (!selected) return
+    if (activateLaunchBlocked) {
+      setMessage({
+        kind: 'warn',
+        text: activateLaunchTip || 'Activate blocked while Steam/Modunary is busy.',
+      })
+      return
+    }
     await withBusy(async () => {
       await runActivate(selected.id)
     })
@@ -357,6 +372,13 @@ export default function App() {
 
   async function onLaunch() {
     if (!selected) return
+    if (activateLaunchBlocked) {
+      setMessage({
+        kind: 'warn',
+        text: activateLaunchTip || 'Launch blocked while Steam/Modunary is busy.',
+      })
+      return
+    }
     await withBusy(async () => {
       // Ensure activated first if not active
       if (store?.activeProfileId !== selected.id) {
@@ -709,15 +731,22 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!window.bannerlord?.onActivateLock) return
+    return window.bannerlord.onActivateLock((state) => setActivateLock(state))
+  }, [])
+
+  useEffect(() => {
     if (!window.bannerlord?.onUiCommand) return
     return window.bannerlord.onUiCommand((command) => {
-      if (command === 'newProfile') openCreateModal()
+      if (command === 'newProfile') void openCreateModal()
       if (command === 'captureCurrent') onRefreshFromDisk()
       if (command === 'renameProfile') onRename()
+      if (command === 'activateProfile') void onActivate()
+      if (command === 'launchProfile') void onLaunch()
     })
-    // Rebind when selection changes so Capture/Rename use the selected profile.
+    // Rebind when selection/lock changes so menu actions use current state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, store?.profiles.length])
+  }, [selectedId, store?.profiles.length, activateLaunchBlocked, activateLock?.message])
 
   const nameAndConfirmModals = (
     <>
@@ -1087,10 +1116,20 @@ export default function App() {
                 </div>
               </div>
               <div className="toolbar-group">
-                <button className="btn primary" disabled={busy} onClick={onActivate}>
+                <button
+                  className="btn primary"
+                  disabled={busy || activateLaunchBlocked}
+                  title={activateLaunchBlocked ? activateLaunchTip : 'Activate this profile'}
+                  onClick={() => void onActivate()}
+                >
                   Activate profile
                 </button>
-                <button className="btn primary" disabled={busy} onClick={onLaunch}>
+                <button
+                  className="btn primary"
+                  disabled={busy || activateLaunchBlocked}
+                  title={activateLaunchBlocked ? activateLaunchTip : launchLabel}
+                  onClick={() => void onLaunch()}
+                >
                   {launchLabel}
                 </button>
                 <button className="btn" disabled={busy} onClick={onRefreshFromDisk}>
@@ -1108,6 +1147,18 @@ export default function App() {
               </div>
             </div>
 
+            {activateLaunchBlocked && activateLock?.message && (
+              <div className="callout warn" title={activateLock.tooltip || undefined}>
+                {activateLock.source === 'steam' || activateLock.source === 'both'
+                  ? activateLock.message
+                  : activateLock.message}
+                {activateLock.steamDetail && activateLock.steamBusy
+                  ? `\nSteam: ${activateLock.steamDetail}`
+                  : ''}
+                {'\n'}
+                Activate and Launch stay disabled until Steam is idle and Modunary finishes.
+              </div>
+            )}
             {message && <div className={`callout ${message.kind}`}>{message.text}</div>}
             {discovery?.warnings?.length ? (
               <div className="callout warn">{discovery.warnings.join('\n')}</div>
@@ -1711,6 +1762,7 @@ export default function App() {
                     [
                       ['saving', 'Saving current profile…'],
                       ['installing-version', `Installing version ${versionModal.requiredVersion.replace(/^v/i, '')}…`],
+                      ['waiting-steam', 'Waiting for Steam to finish…'],
                       ['activating-mods', 'Activating mods…'],
                       ['writing-launcher', 'Writing launcher data…'],
                       ['done', 'Done'],
@@ -1719,6 +1771,7 @@ export default function App() {
                     const order = [
                       'saving',
                       'installing-version',
+                      'waiting-steam',
                       'activating-mods',
                       'writing-launcher',
                       'done',

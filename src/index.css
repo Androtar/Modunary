@@ -579,6 +579,11 @@ button {
   font-size: 0.9rem;
 }
 
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 @media (max-width: 960px) {
   .app-shell {
     grid-template-columns: 1fr;

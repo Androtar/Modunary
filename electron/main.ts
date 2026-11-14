@@ -3,6 +3,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { activateProfile } from './services/activate'
+import {
+  assertOperationAllowed,
+  getActivateLock,
+  startSteamBusyMonitor,
+  subscribeActivateLock,
+} from './services/activateLock'
 import { discoverGame } from './services/discovery'
 import { computeLoadOrder, scanModuleDependencies } from './services/loadOrder'
 import {
@@ -47,7 +53,7 @@ import {
   searchSteamWorkshop,
 } from './services/stores/steamWorkshop'
 import { importModulesIntoVault, listVaultModules } from './services/vault'
-import type { ActivateOptions, ActivateProgressEvent } from './types'
+import type { ActivateLockState, ActivateOptions, ActivateProgressEvent } from './types'
 
 type SecretsPatch = {
   nexusApiKey?: string
@@ -224,7 +230,13 @@ function createWindow() {
   })
 }
 
-function buildAppMenu() {
+function buildAppMenu(lock?: ActivateLockState) {
+  const blocked = Boolean(lock?.blocked)
+  const tip =
+    lock?.tooltip ||
+    (blocked
+      ? 'Steam is installing/validating/updating Bannerlord (or Modunary activate in progress)'
+      : undefined)
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'File',
@@ -247,6 +259,27 @@ function buildAppMenu() {
           label: 'Capture Current Modules',
           click: () => {
             mainWindow?.webContents.send('ui:captureCurrent')
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Activate Profile',
+          accelerator: 'CmdOrCtrl+Shift+A',
+          enabled: !blocked,
+          toolTip: tip,
+          click: () => {
+            if (getActivateLock().blocked) return
+            mainWindow?.webContents.send('ui:activateProfile')
+          },
+        },
+        {
+          label: 'Launch Game',
+          accelerator: 'CmdOrCtrl+Shift+L',
+          enabled: !blocked,
+          toolTip: tip,
+          click: () => {
+            if (getActivateLock().blocked) return
+            mainWindow?.webContents.send('ui:launchProfile')
           },
         },
         { type: 'separator' },
@@ -391,12 +424,17 @@ function registerIpc() {
   ipcMain.handle(
     'profiles:launch',
     wrapIpc('profiles:launch', async (_e, id: string) => {
+      assertOperationAllowed('launch')
       const store = getStoreSnapshot()
       const profile = store.profiles.find((p) => p.id === id)
       if (!profile) throw new Error('Profile not found.')
       const discovery = discoverGame(store.gameInstallPath, store.documentsPath)
       return launchProfile(profile, discovery.installPath)
     }),
+  )
+  ipcMain.handle(
+    'activate:getLock',
+    wrapIpc('activate:getLock', () => getActivateLock()),
   )
   ipcMain.handle(
     'paths:set',
@@ -535,7 +573,14 @@ migrateUserDataIfNeeded()
 app.whenReady().then(() => {
   ensureAppDirs()
   registerIpc()
-  buildAppMenu()
+  buildAppMenu(getActivateLock())
+  startSteamBusyMonitor(2500)
+  subscribeActivateLock((lock) => {
+    buildAppMenu(lock)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('activate:lock', lock)
+    }
+  })
   createWindow()
 
   app.on('activate', () => {

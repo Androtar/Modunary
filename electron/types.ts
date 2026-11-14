@@ -140,6 +140,7 @@ export interface ActivateOptions {
 export type ActivateProgressPhase =
   | 'saving'
   | 'installing-version'
+  | 'waiting-steam'
   | 'activating-mods'
   | 'writing-launcher'
   | 'done'
@@ -148,6 +149,28 @@ export type ActivateProgressPhase =
 export interface ActivateProgressEvent {
   phase: ActivateProgressPhase
   message: string
+}
+
+/**
+ * Global operation block: true when Modunary Activate is running OR Steam is
+ * installing/validating/updating Bannerlord (app 261550). Survives modal close.
+ */
+export interface ActivateLockState {
+  /** @deprecated use `blocked` — kept as alias for older UI checks */
+  active: boolean
+  blocked: boolean
+  source: 'none' | 'activate' | 'steam' | 'both'
+  profileId: string | null
+  profileName: string | null
+  phase: ActivateProgressPhase | null
+  message: string | null
+  startedAt: string | null
+  steamUpdatePending: boolean
+  activateInProgress: boolean
+  steamBusy: boolean
+  steamDetail: string | null
+  /** Hover / menu explanation when blocked. */
+  tooltip: string | null
 }
 
 export interface ActivateResult {

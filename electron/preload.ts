@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  ActivateLockState,
   ActivateOptions,
   ActivateProgressEvent,
   ActivateResult,
@@ -52,6 +53,8 @@ export interface BannerlordApi {
   ) => Promise<ModProfile>
   activateProfile: (id: string, options?: ActivateOptions) => Promise<ActivateResult>
   onActivateProgress: (handler: (event: ActivateProgressEvent) => void) => () => void
+  getActivateLock: () => Promise<ActivateLockState>
+  onActivateLock: (handler: (state: ActivateLockState) => void) => () => void
   launchProfile: (id: string) => Promise<LaunchResult>
   setPaths: (gameInstallPath: string | null, documentsPath: string | null) => Promise<AppStore>
   setAllowSteamBetaKeyWrite: (allow: boolean) => Promise<AppStore>
@@ -89,7 +92,9 @@ export interface BannerlordApi {
   showItemInFolder: (target: string) => Promise<void>
   openExternal: (url: string) => Promise<void>
   onUiCommand: (
-    handler: (command: 'newProfile' | 'captureCurrent' | 'renameProfile') => void,
+    handler: (
+      command: 'newProfile' | 'captureCurrent' | 'renameProfile' | 'activateProfile' | 'launchProfile',
+    ) => void,
   ) => () => void
 }
 
@@ -124,6 +129,17 @@ const api: BannerlordApi = {
       ipcRenderer.removeListener('activate:progress', listener)
     }
   },
+  getActivateLock: () => ipcRenderer.invoke('activate:getLock'),
+  onActivateLock: (handler) => {
+    const listener = (_event: unknown, data: ActivateLockState) => {
+      handler(data)
+    }
+    ipcRenderer.on('activate:lock', listener)
+    void ipcRenderer.invoke('activate:getLock').then((state: ActivateLockState) => handler(state))
+    return () => {
+      ipcRenderer.removeListener('activate:lock', listener)
+    }
+  },
   launchProfile: (id) => ipcRenderer.invoke('profiles:launch', id),
   setPaths: (gameInstallPath, documentsPath) =>
     ipcRenderer.invoke('paths:set', gameInstallPath, documentsPath),
@@ -155,13 +171,19 @@ const api: BannerlordApi = {
     const onNew = () => handler('newProfile')
     const onCapture = () => handler('captureCurrent')
     const onRename = () => handler('renameProfile')
+    const onActivate = () => handler('activateProfile')
+    const onLaunch = () => handler('launchProfile')
     ipcRenderer.on('ui:newProfile', onNew)
     ipcRenderer.on('ui:captureCurrent', onCapture)
     ipcRenderer.on('ui:renameProfile', onRename)
+    ipcRenderer.on('ui:activateProfile', onActivate)
+    ipcRenderer.on('ui:launchProfile', onLaunch)
     return () => {
       ipcRenderer.removeListener('ui:newProfile', onNew)
       ipcRenderer.removeListener('ui:captureCurrent', onCapture)
       ipcRenderer.removeListener('ui:renameProfile', onRename)
+      ipcRenderer.removeListener('ui:activateProfile', onActivate)
+      ipcRenderer.removeListener('ui:launchProfile', onLaunch)
     }
   },
 }
