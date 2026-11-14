@@ -52,6 +52,7 @@ import {
 import { resolveNexusCollection } from './services/stores/nexusCollection'
 import {
   cancelCollectionInstall,
+  clearCollectionInstallProgress,
   getCollectionInstallProgress,
   openDownloadsFolder,
   retryCollectionMod,
@@ -59,6 +60,7 @@ import {
   startCollectionInstall,
   subscribeCollectionInstall,
 } from './services/collectionInstall'
+import { ensureNexusSessionConfigured } from './services/nexusBrowser'
 import {
   getWorkshopPathInfo,
   openSteamWorkshopItem,
@@ -574,6 +576,13 @@ function registerIpc() {
     wrapIpc('nexus:collectionProgress', () => getCollectionInstallProgress()),
   )
   ipcMain.handle(
+    'nexus:collectionClearProgress',
+    wrapIpc('nexus:collectionClearProgress', () => {
+      clearCollectionInstallProgress()
+      return getCollectionInstallProgress()
+    }),
+  )
+  ipcMain.handle(
     'nexus:openDownloads',
     wrapIpc('nexus:openDownloads', () => openDownloadsFolder()),
   )
@@ -643,6 +652,8 @@ migrateUserDataIfNeeded()
 
 app.whenReady().then(() => {
   ensureAppDirs()
+  // Persist Nexus cookies + route in-app browser downloads to ~/Downloads.
+  ensureNexusSessionConfigured()
   registerIpc()
   buildAppMenu(getActivateLock())
   startSteamBusyMonitor(2500)

@@ -95,6 +95,7 @@ export interface BannerlordApi {
   retryCollectionMod: () => Promise<CollectionInstallProgress | null>
   cancelCollectionInstall: () => Promise<CollectionInstallProgress | null>
   getCollectionProgress: () => Promise<CollectionInstallProgress | null>
+  clearCollectionProgress: () => Promise<CollectionInstallProgress | null>
   onCollectionProgress: (handler: (progress: CollectionInstallProgress) => void) => () => void
   openDownloadsFolder: () => Promise<void>
   openSteamWorkshop: (id: string) => Promise<void>
@@ -183,6 +184,7 @@ const api: BannerlordApi = {
   retryCollectionMod: () => ipcRenderer.invoke('nexus:collectionRetry'),
   cancelCollectionInstall: () => ipcRenderer.invoke('nexus:collectionCancel'),
   getCollectionProgress: () => ipcRenderer.invoke('nexus:collectionProgress'),
+  clearCollectionProgress: () => ipcRenderer.invoke('nexus:collectionClearProgress'),
   onCollectionProgress: (handler) => {
     const listener = (_event: unknown, data: CollectionInstallProgress) => handler(data)
     ipcRenderer.on('nexus:collectionProgress', listener)

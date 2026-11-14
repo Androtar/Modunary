@@ -1444,11 +1444,28 @@ export default function App() {
                           {collectionProgress.completed}/{collectionProgress.total} ·{' '}
                           {collectionProgress.message}
                         </div>
+                        {(collectionProgress.stage === 'waiting-download' ||
+                          collectionProgress.message.startsWith('ACTION NEEDED')) && (
+                          <div
+                            style={{
+                              margin: '0.35rem 0',
+                              padding: '0.45rem 0.6rem',
+                              border: '1px solid var(--accent, #c9a227)',
+                              borderRadius: 6,
+                              background: 'rgba(201,162,39,0.12)',
+                              fontWeight: 600,
+                            }}
+                          >
+                            Click Slow Download in the Nexus window (complete timer/CAPTCHA
+                            yourself). Modunary will import the ZIP from Downloads — it will not
+                            hang silently.
+                          </div>
+                        )}
                         {collectionProgress.currentModName && (
                           <div>
                             Current: {collectionProgress.currentModName}
                             {collectionProgress.stage === 'waiting-download'
-                              ? ' (Slow Download — complete timer/CAPTCHA in the Nexus window)'
+                              ? ' — waiting on Slow Download / CAPTCHA'
                               : ''}
                           </div>
                         )}
@@ -1483,6 +1500,18 @@ export default function App() {
                           >
                             Open Downloads
                           </button>
+                          {!collectionProgress.active && (
+                            <button
+                              className="btn ghost"
+                              onClick={() => {
+                                void window.bannerlord.clearCollectionProgress().then((p) => {
+                                  setCollectionProgress(p)
+                                })
+                              }}
+                            >
+                              Clear progress
+                            </button>
+                          )}
                         </div>
                         <ul className="activate-progress" style={{ maxHeight: 220, overflow: 'auto' }}>
                           {collectionProgress.items.map((item) => (
