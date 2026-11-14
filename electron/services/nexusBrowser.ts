@@ -207,22 +207,19 @@ const SLOW_DOWNLOAD_ASSIST_SCRIPT = `(() => {
     return true;
   };
   const clickEl = (el) => {
-    const r = el.getBoundingClientRect();
+    // Prefer the interactive host (button/link) when label is inside a <span>
+    const host = (el.closest && el.closest('a,button,[role="button"]')) || el;
+    const r = host.getBoundingClientRect();
     const x = r.left + r.width / 2;
     const y = r.top + r.height / 2;
-    try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch (_) {}
-    try { el.style.outline = '3px solid #6f9e6a'; el.style.outlineOffset = '2px'; } catch (_) {}
+    try { host.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch (_) {}
+    try { host.style.outline = '3px solid #6f9e6a'; host.style.outlineOffset = '2px'; } catch (_) {}
     const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 };
     for (const type of ['pointerover','pointerenter','mouseover','mouseenter','pointerdown','mousedown','pointerup','mouseup','click']) {
-      try { el.dispatchEvent(new MouseEvent(type, opts)); } catch (_) {}
+      try { host.dispatchEvent(new MouseEvent(type, opts)); } catch (_) {}
     }
-    try { if (typeof el.click === 'function') el.click(); } catch (_) {}
-    // Activate nearest button/link ancestor if text node wrapper was matched
-    const host = el.closest && el.closest('a,button,[role="button"]');
-    if (host && host !== el) {
-      try { host.click(); } catch (_) {}
-    }
-    return { x, y, w: r.width, h: r.height, tag: el.tagName, className: (el.className || '').toString().slice(0, 120) };
+    try { if (typeof host.click === 'function') host.click(); } catch (_) {}
+    return { x, y, w: r.width, h: r.height, tag: host.tagName, className: (host.className || '').toString().slice(0, 120) };
   };
 
   const bodyText = (document.body && document.body.innerText || '');
@@ -237,12 +234,27 @@ const SLOW_DOWNLOAD_ASSIST_SCRIPT = `(() => {
     return { status: 'captcha', detail: 'CAPTCHA present — complete it, then Slow download.', dump };
   }
 
-  // Prefer exact own-text match via TreeWalker (works when React splits text / uses div buttons).
+  // Pierce open shadow roots — Nexus Free/Premium modal lives in shadow DOM.
+  const allElements = [];
+  const collect = (root) => {
+    if (!root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let node;
+    while ((node = walker.nextNode())) {
+      allElements.push(node);
+      if (node.shadowRoot) collect(node.shadowRoot);
+    }
+  };
+  collect(document.body || document.documentElement);
+  for (const host of Array.from(document.querySelectorAll('*'))) {
+    if (host.shadowRoot) collect(host.shadowRoot);
+  }
+
   const candidates = [];
-  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
-  let node;
-  while ((node = walker.nextNode())) {
-    const el = node;
+  const seen = new Set();
+  for (const el of allElements) {
+    if (seen.has(el)) continue;
+    seen.add(el);
     if (!visible(el) || isVortexish(el)) continue;
     const own = ownText(el);
     const full = textOf(el);
@@ -310,29 +322,6 @@ type AssistResult = {
   detail: string
   dump?: Record<string, unknown>
   clickProof?: { x: number; y: number; w: number; h: number; tag: string }
-}
-
-function listNexusFrames(win: BrowserWindow): Array<{ url: string; executeJavaScript: (code: string) => Promise<unknown> }> {
-  const frames: Array<{ url: string; executeJavaScript: (code: string) => Promise<unknown> }> = []
-  try {
-    const main = win.webContents.mainFrame
-    const all = typeof main.framesInSubtree !== 'undefined' ? main.framesInSubtree : [main]
-    for (const f of all) {
-      frames.push({
-        url: f.url || '',
-        executeJavaScript: (code: string) => f.executeJavaScript(code, true),
-      })
-    }
-  } catch {
-    // fall through
-  }
-  if (!frames.length) {
-    frames.push({
-      url: win.webContents.getURL(),
-      executeJavaScript: (code: string) => win.webContents.executeJavaScript(code, true),
-    })
-  }
-  return frames
 }
 
 /** CDP Page.getFrameTree node shape */
@@ -536,7 +525,8 @@ async function cdpForceClickSlowDownload(win: BrowserWindow): Promise<AssistResu
           fromIndex: 0,
           toIndex: Math.min(search.resultCount, 16),
         })) as { nodeIds: number[] }
-        let best: { x: number; y: number; area: number; nodeId: number } | null = null
+        let best: { x: number; y: number; area: number; nodeId: number; score: number } | null =
+          null
         for (const nodeId of nodeIds) {
           try {
             const box = (await wc.debugger.sendCommand('DOM.getContentQuads', {
@@ -552,10 +542,12 @@ async function cdpForceClickSlowDownload(win: BrowserWindow): Promise<AssistResu
             const maxY = Math.max(...ys)
             const w = maxX - minX
             const h = maxY - minY
-            if (w < 20 || h < 10 || w > 480 || h > 120) continue // skip huge headings / tiny noise
-            const area = w * h
-            if (!best || area < best.area) {
-              best = { x: (minX + maxX) / 2, y: (minY + maxY) / 2, area, nodeId }
+            if (w < 8 || h < 8) continue
+            const area = Math.max(1, w * h)
+            // Prefer compact Free-tier button (~wide, short) over large heading text
+            const score = (h <= 90 ? 100000 : 0) + (w <= 420 ? 50000 : 0) - area
+            if (!best || score > best.score) {
+              best = { x: (minX + maxX) / 2, y: (minY + maxY) / 2, area, nodeId, score }
             }
           } catch {
             // next
@@ -620,7 +612,39 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<AssistR
   }
 
   try {
-    // Primary: trusted CDP mouse click at Free-tier Slow download center
+    // 1) Main-world shadow-piercing find (returns coords) — then trusted CDP/sendInputEvent click.
+    //    Untrusted el.click() alone is ignored by Nexus/React.
+    try {
+      const found = (await win.webContents.executeJavaScript(SLOW_DOWNLOAD_ASSIST_SCRIPT, true)) as AssistResult
+      if (found?.status === 'captcha' || found?.status === 'waiting-timer') return found
+      if (found?.status === 'clicked-slow' && found.clickProof) {
+        const { x, y } = found.clickProof
+        try {
+          win.webContents.debugger.attach('1.3')
+        } catch {
+          // attached
+        }
+        try {
+          await cdpDispatchTrustedClick(win.webContents, x, y)
+          return {
+            status: 'clicked-slow',
+            detail: `Trusted click Slow download @${Math.round(x)},${Math.round(y)} (${found.clickProof.tag})`,
+            dump: found.dump,
+            clickProof: found.clickProof,
+          }
+        } finally {
+          try {
+            if (win.webContents.debugger.isAttached()) win.webContents.debugger.detach()
+          } catch {
+            // ignore
+          }
+        }
+      }
+    } catch {
+      // fall through to full CDP path
+    }
+
+    // 2) Full multi-frame CDP path
     const cdp = await cdpForceClickSlowDownload(win)
     if (
       cdp &&
@@ -632,27 +656,10 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<AssistR
       return cdp
     }
 
-    // Secondary diagnostics via frame eval (may still fail due to untrusted click)
-    const frameDumps: Array<{ url: string; status?: string; bodyHasSlow?: boolean }> = []
-    for (const frame of listNexusFrames(win)) {
-      try {
-        const result = (await frame.executeJavaScript(SLOW_DOWNLOAD_ASSIST_SCRIPT)) as AssistResult
-        frameDumps.push({
-          url: frame.url.slice(0, 120),
-          status: result?.status,
-          bodyHasSlow: Boolean(
-            result?.dump && (result.dump as { bodyHasSlow?: boolean }).bodyHasSlow,
-          ),
-        })
-      } catch {
-        frameDumps.push({ url: frame.url.slice(0, 120), status: 'frame-eval-error' })
-      }
-    }
-
     return {
       status: 'not-found',
-      detail: `Trusted CDP click missed Slow download — retrying… ${JSON.stringify({ cdp: cdp?.detail, frames: frameDumps }).slice(0, 260)}`,
-      dump: { cdp: cdp?.dump || null, frames: frameDumps },
+      detail: `Trusted CDP click missed Slow download — retrying… ${JSON.stringify(cdp?.detail || cdp?.dump).slice(0, 240)}`,
+      dump: cdp?.dump || undefined,
     }
   } catch (err) {
     return {
