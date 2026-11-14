@@ -5,7 +5,7 @@ import type {
   NexusCollectionInfoDto,
 } from '../types'
 import { downloadUrlToVault, importZipToVault } from './installMod'
-import { addModulesToProfile, updateProfile } from './profiles'
+import { addModulesToProfile, addVaultModulesToProfile, updateProfile } from './profiles'
 import { getNexusDownloadLink, listNexusFiles, validateNexusKey } from './stores/nexus'
 import {
   resolveNexusCollection,
@@ -27,6 +27,50 @@ import {
 } from './nexusBrowser'
 
 type ProgressListener = (p: CollectionInstallProgress) => void
+
+function isBlseCollectionMod(mod: { name: string; modId: number }): boolean {
+  const n = (mod.name || '').toLowerCase()
+  return (
+    /\bblse\b/.test(n) ||
+    /bannerlord\s*software\s*extender/.test(n) ||
+    /\bsoftware\s*extender\b/.test(n)
+  )
+}
+
+/** Strict Downloads match for Retry — require modId or a strong name token; never bare "Bannerlord". */
+function findStrictMatchingDownload(mod: NexusCollectionMod): {
+  path: string
+  name: string
+} | null {
+  const modId = String(mod.modId)
+  const name = (mod.name || '').toLowerCase()
+  const tokens = name
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(' ')
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 5 && !['bannerlord', 'mount', 'blade', 'module', 'mod'].includes(t))
+  const wantBlse = isBlseCollectionMod(mod)
+
+  const scored = listDownloadArchives()
+    .filter((f) => Date.now() - f.mtimeMs < 12 * 60 * 60 * 1000)
+    .map((f) => {
+      const n = f.name.toLowerCase()
+      let score = 0
+      if (n.includes(modId)) score += 5
+      for (const t of tokens.slice(0, 4)) {
+        if (n.includes(t)) score += 2
+      }
+      const looksBlse = /\bblse\b|software\s*extender/i.test(n)
+      if (wantBlse && looksBlse) score += 4
+      if (!wantBlse && looksBlse) score -= 10 // never reuse BLSE for a normal mod
+      return { f, score }
+    })
+    .filter((x) => x.score >= 4)
+    .sort((a, b) => b.score - a.score || b.f.mtimeMs - a.f.mtimeMs)
+
+  const hit = scored[0]?.f
+  return hit ? { path: hit.path, name: hit.name } : null
+}
 
 type Session = {
   profileId: string
@@ -281,32 +325,31 @@ async function manualSlowDownloadInstall(
   item.message = `Auto-clicking Manual / Slow Download for “${mod.name}” (never Vortex)…`
   emit({ stage: 'waiting-download', message: item.message })
 
-  // Retry fast-path: re-import a recent matching archive already in Downloads (no re-download).
+  // Retry fast-path: only re-import an archive that clearly matches THIS mod (never a random BLSE .7z).
   {
-    const hints = [String(mod.modId), mod.name.slice(0, 24), 'BLSE', 'Bannerlord'].map((h) =>
-      h.toLowerCase(),
-    )
-    const recent = listDownloadArchives()
-      .filter((f) => Date.now() - f.mtimeMs < 6 * 60 * 60 * 1000)
-      .map((f) => {
-        const n = f.name.toLowerCase()
-        const score = hints.reduce((s, h) => (h && n.includes(h) ? s + 1 : s), 0)
-        return { f, score }
-      })
-      .filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score || b.f.mtimeMs - a.f.mtimeMs)[0]?.f
+    const recent = findStrictMatchingDownload(mod)
     if (recent) {
       item.status = 'importing'
       item.message = `Re-importing existing ${recent.name} with 7za…`
       emit({ stage: 'installing', message: item.message })
       const imported = await importZipToVault(recent.path)
       if (imported.ok) {
-        item.message = `Imported ${recent.name} (${imported.extractor || '7za'})`
-        return { ok: true, modules: imported.modules, kind: imported.kind }
+        // Reject BLSE overlay when this collection row is a normal module.
+        if (imported.kind === 'blse' && !isBlseCollectionMod(mod)) {
+          item.message =
+            `Existing archive was BLSE bin overlay, not “${mod.name}” — downloading the correct file…`
+          emit({ stage: 'waiting-download', message: item.message })
+        } else if (imported.kind !== 'blse' && (!imported.modules || imported.modules.length === 0)) {
+          item.message = `Existing archive had no modules — downloading “${mod.name}”…`
+          emit({ stage: 'waiting-download', message: item.message })
+        } else {
+          item.message = `Imported ${recent.name} (${imported.extractor || '7za'})`
+          return { ok: true, modules: imported.modules, kind: imported.kind }
+        }
+      } else {
+        item.message = `Existing archive failed (${imported.error || 'unknown'}) — trying Slow Download…`
+        emit({ stage: 'waiting-download', message: item.message })
       }
-      // If extract failed, fall through to Slow Download / fresh file.
-      item.message = `Existing archive failed (${imported.error || 'unknown'}) — trying Slow Download…`
-      emit({ stage: 'waiting-download', message: item.message })
     }
   }
 
@@ -424,7 +467,14 @@ async function manualSlowDownloadInstall(
   const folderResult = await waitForNewDownload({
     sinceMs,
     timeoutMs: 20 * 60 * 1000,
-    nameHints: [String(mod.modId), mod.name.slice(0, 24), 'BLSE', 'Bannerlord'],
+    nameHints: [
+      String(mod.modId),
+      ...mod.name
+        .replace(/[^a-zA-Z0-9]+/g, ' ')
+        .split(' ')
+        .filter((t) => t.length >= 5 && !/^bannerlord$/i.test(t))
+        .slice(0, 3),
+    ],
     signal: {
       get cancelled() {
         return Boolean(session?.cancelled) || Boolean(electronHit)
@@ -523,6 +573,13 @@ async function installOne(
     return
   }
   if (manual.kind === 'blse') {
+    if (!isBlseCollectionMod(mod)) {
+      item.status = 'error'
+      item.error =
+        'Downloaded/imported a BLSE bin overlay, but this Collection row is not BLSE. Skip/Retry with the correct Manual Download.'
+      item.message = item.error
+      return
+    }
     try {
       updateProfile(session.profileId, {
         settings: { requiresBlse: true, preferredLauncher: 'blse' },
@@ -531,13 +588,15 @@ async function installOne(
       // profile update is best-effort
     }
     item.status = 'done'
-    item.message = 'BLSE installed into game bin/ (Slow Download + 7z)'
+    item.message = 'BLSE installed into game bin/ (not a Mods-tab module)'
     item.method = 'slow-download'
     return
   }
-  if (!manual.modules) {
+  if (!manual.modules || manual.modules.length === 0) {
     item.status = 'error'
-    item.error = manual.error || 'Manual install failed'
+    item.error =
+      manual.error ||
+      'Import produced no modules (nothing added to profile). Check the archive contains SubModule.xml.'
     item.message = item.error
     return
   }
@@ -551,7 +610,7 @@ async function installOne(
     true,
   )
   item.status = 'done'
-  item.message = 'Installed via Slow Download + folder watch'
+  item.message = `Installed ${manual.modules.length} module(s) into profile + vault`
   item.method = 'slow-download'
 }
 
@@ -622,6 +681,13 @@ async function runLoop(parent: BrowserWindow | null): Promise<void> {
 
   closeBrowser()
   session.running = false
+  // Ensure anything vaulted during import is present on the profile mod list (persist + UI).
+  let vaultSynced = 0
+  try {
+    vaultSynced = addVaultModulesToProfile(session.profileId).added
+  } catch {
+    // best-effort
+  }
   const failed = session.items.filter((i) => i.status === 'error').length
   const skipped = session.items.filter((i) => i.status === 'skipped').length
   const done = session.items.filter((i) => i.status === 'done').length
@@ -630,7 +696,8 @@ async function runLoop(parent: BrowserWindow | null): Promise<void> {
     active: false,
     message: session.cancelled
       ? 'Collection install cancelled.'
-      : `Collection install finished — ${done} installed, ${skipped} skipped, ${failed} failed.`,
+      : `Collection install finished — ${done} installed, ${skipped} skipped, ${failed} failed` +
+        (vaultSynced ? `; synced ${vaultSynced} vault module(s) into profile.` : '.'),
   })
 }
 

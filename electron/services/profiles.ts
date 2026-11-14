@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type {
   AppStore,
@@ -8,12 +9,13 @@ import type {
   ProfileSettings,
 } from '../types'
 import { DEFAULT_PROFILE_SETTINGS, EMPTY_STORE } from '../types'
-import { discoverGame } from './discovery'
+import { discoverGame, parseSubModuleXml } from './discovery'
 import {
   modsFromLauncherData,
   readLauncherData,
 } from './launcherData'
-import { ensureAppDirs, getStorePath, resolvePaths } from './paths'
+import { ensureAppDirs, getStorePath, getVaultPath, resolvePaths } from './paths'
+import { listVaultModules } from './vault'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -374,6 +376,25 @@ export function addModulesToProfile(
   profile.dirty = true
   saveStore(store)
   return profile
+}
+
+/** Add vault modules (SubModule.xml present) that are missing from the profile. */
+export function addVaultModulesToProfile(id: string): { profile: ModProfile; added: number } {
+  const folders = listVaultModules()
+  const before = loadStore().profiles.find((p) => p.id === id)?.mods.length ?? 0
+  const modules = folders.map((folderName) => {
+    const sub = path.join(getVaultPath(), folderName, 'SubModule.xml')
+    const meta = parseSubModuleXml(sub)
+    return {
+      folderName,
+      id: meta?.id || folderName,
+      name: meta?.name || folderName,
+      version: meta?.version || 'unknown',
+      source: 'local' as const,
+    }
+  })
+  const profile = addModulesToProfile(id, modules, true)
+  return { profile, added: Math.max(0, profile.mods.length - before) }
 }
 
 export function setProfileDirty(id: string, dirty: boolean): ModProfile {

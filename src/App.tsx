@@ -743,9 +743,13 @@ export default function App() {
 
   useEffect(() => {
     if (!window.bannerlord?.onCollectionProgress) return
+    let lastCompleted = -1
     const unsub = window.bannerlord.onCollectionProgress((p) => {
       setCollectionProgress(p)
-      if (p.stage === 'done' || p.stage === 'cancelled') {
+      const finished = p.stage === 'done' || p.stage === 'cancelled'
+      const progressed = p.completed !== lastCompleted && p.completed > 0
+      if (finished || progressed) {
+        lastCompleted = p.completed
         void refresh()
       }
     })
