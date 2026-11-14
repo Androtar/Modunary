@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -62,7 +62,20 @@ const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 
 let mainWindow: BrowserWindow | null = null
 
+function resolvePreloadPath(): string {
+  // Must be .cjs because package.json sets "type": "module" (plain .js is ESM).
+  const candidates = ['preload.cjs', 'preload.js', 'preload.mjs']
+  for (const name of candidates) {
+    const full = path.join(__dirname, name)
+    if (fs.existsSync(full)) return full
+  }
+  return path.join(__dirname, 'preload.cjs')
+}
+
 function createWindow() {
+  const preloadPath = resolvePreloadPath()
+  console.log('[main] preload:', preloadPath, 'exists=', fs.existsSync(preloadPath))
+
   mainWindow = new BrowserWindow({
     width: 1360,
     height: 900,
@@ -71,14 +84,22 @@ function createWindow() {
     title: 'Bannerlord Mod Profiles',
     backgroundColor: '#1a1510',
     webPreferences: {
-      preload: path.join(
-        __dirname,
-        fs.existsSync(path.join(__dirname, 'preload.mjs')) ? 'preload.mjs' : 'preload.js',
-      ),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
     },
+  })
+
+  mainWindow.webContents.on('preload-error', (_event, preload, err) => {
+    console.error('[main] preload-error', preload, err)
+  })
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow?.webContents
+      .executeJavaScript('Boolean(window.bannerlord)')
+      .then((ok) => console.log('[main] window.bannerlord present=', ok))
+      .catch((err) => console.error('[main] bannerlord probe failed', err))
   })
 
   if (VITE_DEV_SERVER_URL) {
@@ -92,107 +113,281 @@ function createWindow() {
   })
 }
 
+function buildAppMenu() {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Profile',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => {
+            mainWindow?.webContents.send('ui:newProfile')
+          },
+        },
+        {
+          label: 'Capture Current Modules',
+          click: () => {
+            mainWindow?.webContents.send('ui:captureCurrent')
+          },
+        },
+        { type: 'separator' },
+        { role: 'quit', label: 'Exit' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+      ],
+    },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+function wrapIpc<T extends unknown[]>(
+  name: string,
+  handler: (...args: T) => unknown,
+): (...args: T) => unknown {
+  return (...args: T) => {
+    try {
+      const result = handler(...args)
+      if (result && typeof (result as Promise<unknown>).then === 'function') {
+        return (result as Promise<unknown>).catch((err) => {
+          console.error(`[ipc] ${name} rejected`, err)
+          throw err
+        })
+      }
+      return result
+    } catch (err) {
+      console.error(`[ipc] ${name} threw`, err)
+      throw err
+    }
+  }
+}
+
 function registerIpc() {
-  ipcMain.handle('store:get', () => getStoreSnapshot())
-  ipcMain.handle('profiles:list', () => listProfiles())
-  ipcMain.handle('profiles:create', (_e, input) => createProfile(input))
-  ipcMain.handle('profiles:rename', (_e, id: string, name: string) => renameProfile(id, name))
-  ipcMain.handle('profiles:delete', (_e, id: string) => deleteProfile(id))
-  ipcMain.handle('profiles:setActive', (_e, id: string | null) => setActiveProfile(id))
-  ipcMain.handle('profiles:update', (_e, id: string, patch) => updateProfile(id, patch))
-  ipcMain.handle('profiles:refreshFromDisk', (_e, id: string) => refreshProfileFromDisk(id))
-  ipcMain.handle('profiles:reorderMods', (_e, id: string, orderedIds: string[]) =>
-    reorderMods(id, orderedIds),
+  ipcMain.handle(
+    'store:get',
+    wrapIpc('store:get', () => getStoreSnapshot()),
   )
-  ipcMain.handle('profiles:setModEnabled', (_e, id: string, modId: string, enabled: boolean) =>
-    setModEnabled(id, modId, enabled),
+  ipcMain.handle(
+    'profiles:list',
+    wrapIpc('profiles:list', () => listProfiles()),
   )
-  ipcMain.handle('profiles:syncModsFromDisk', (_e, id: string) => syncModsFromDisk(id))
-  ipcMain.handle('profiles:duplicate', (_e, id: string, newName?: string) =>
-    duplicateProfile(id, newName),
+  ipcMain.handle(
+    'profiles:create',
+    wrapIpc('profiles:create', (_e, input) => createProfile(input)),
   )
-  ipcMain.handle('profiles:setDirty', (_e, id: string, dirty: boolean) => setProfileDirty(id, dirty))
-  ipcMain.handle('profiles:addModules', (_e, id: string, modules, enabled?: boolean) =>
-    addModulesToProfile(id, modules, enabled),
+  ipcMain.handle(
+    'profiles:rename',
+    wrapIpc('profiles:rename', (_e, id: string, name: string) => renameProfile(id, name)),
   )
-  ipcMain.handle('profiles:activate', (_e, id: string, options?: ActivateOptions) =>
-    activateProfile(id, options),
+  ipcMain.handle(
+    'profiles:delete',
+    wrapIpc('profiles:delete', (_e, id: string) => deleteProfile(id)),
   )
-  ipcMain.handle('profiles:launch', async (_e, id: string) => {
-    const store = getStoreSnapshot()
-    const profile = store.profiles.find((p) => p.id === id)
-    if (!profile) throw new Error('Profile not found.')
-    const discovery = discoverGame(store.gameInstallPath, store.documentsPath)
-    return launchProfile(profile, discovery.installPath)
-  })
-  ipcMain.handle('paths:set', (_e, gameInstallPath: string | null, documentsPath: string | null) =>
-    setPaths(gameInstallPath, documentsPath),
+  ipcMain.handle(
+    'profiles:setActive',
+    wrapIpc('profiles:setActive', (_e, id: string | null) => setActiveProfile(id)),
   )
-  ipcMain.handle('settings:setAllowSteamBetaKeyWrite', (_e, allow: boolean) =>
-    setAllowSteamBetaKeyWrite(allow),
+  ipcMain.handle(
+    'profiles:update',
+    wrapIpc('profiles:update', (_e, id: string, patch) => updateProfile(id, patch)),
   )
-  ipcMain.handle('discovery:get', () => {
-    const store = getStoreSnapshot()
-    return discoverGame(store.gameInstallPath, store.documentsPath)
-  })
-  ipcMain.handle('vault:list', () => listVaultModules())
-  ipcMain.handle('vault:importModules', () => {
-    const store = getStoreSnapshot()
-    const discovery = discoverGame(store.gameInstallPath, store.documentsPath)
-    if (!discovery.modulesPath) throw new Error('Modules path not found.')
-    return importModulesIntoVault(discovery.modulesPath)
-  })
-  ipcMain.handle('vault:path', () => getVaultPath())
-  ipcMain.handle('secrets:status', () => getSecretsStatus())
-  ipcMain.handle('secrets:set', (_e, patch: SecretsPatch) => setSecrets(patch))
-  ipcMain.handle('stores:search', async (_e, store: string, query: string) => {
-    if (store === 'nexus') return searchNexus(query)
-    if (store === 'steam') return searchSteamWorkshop(query)
-    if (store === 'moddb') return searchModdb(query)
-    throw new Error(`Unknown store: ${store}`)
-  })
-  ipcMain.handle('stores:nexusValidate', () => validateNexusKey())
-  ipcMain.handle('stores:nexusFiles', (_e, modId: string) => listNexusFiles(modId))
-  ipcMain.handle('stores:nexusDownload', async (_e, modId: string, fileId: string) => {
-    const link = await getNexusDownloadLink(modId, fileId)
-    if (!link.ok || !link.url) return link
-    const imported = await downloadUrlToVault(link.url, `nexus-${modId}-${fileId}`)
-    return { ...link, imported }
-  })
-  ipcMain.handle('stores:steamOpen', (_e, id: string) => openSteamWorkshopItem(id))
-  ipcMain.handle('stores:workshopInfo', () => getWorkshopPathInfo())
-  ipcMain.handle('stores:importWorkshop', (_e, publishedFileId: string) => {
-    const root = findWorkshopContentPath()
-    if (!root) throw new Error('Workshop content folder not found.')
-    return importWorkshopFolder(path.join(root, publishedFileId))
-  })
-  ipcMain.handle('install:zip', async (_e, zipPath: string) => importZipToVault(zipPath))
-  ipcMain.handle('install:folder', async (_e, folderPath: string) => importFolderToVault(folderPath))
-  ipcMain.handle('dialog:pickDirectory', async (_e, title: string) => {
-    const result = await dialog.showOpenDialog(mainWindow!, {
-      title,
-      properties: ['openDirectory'],
-    })
-    if (result.canceled || !result.filePaths[0]) return null
-    return result.filePaths[0]
-  })
-  ipcMain.handle('dialog:pickZip', async () => {
-    const result = await dialog.showOpenDialog(mainWindow!, {
-      title: 'Select mod ZIP',
-      properties: ['openFile'],
-      filters: [{ name: 'ZIP archives', extensions: ['zip'] }],
-    })
-    if (result.canceled || !result.filePaths[0]) return null
-    return result.filePaths[0]
-  })
-  ipcMain.handle('shell:openPath', async (_e, target: string) => shell.openPath(target))
-  ipcMain.handle('shell:showItem', (_e, target: string) => shell.showItemInFolder(target))
-  ipcMain.handle('shell:openExternal', (_e, url: string) => shell.openExternal(url))
+  ipcMain.handle(
+    'profiles:refreshFromDisk',
+    wrapIpc('profiles:refreshFromDisk', (_e, id: string) => refreshProfileFromDisk(id)),
+  )
+  ipcMain.handle(
+    'profiles:reorderMods',
+    wrapIpc('profiles:reorderMods', (_e, id: string, orderedIds: string[]) =>
+      reorderMods(id, orderedIds),
+    ),
+  )
+  ipcMain.handle(
+    'profiles:setModEnabled',
+    wrapIpc('profiles:setModEnabled', (_e, id: string, modId: string, enabled: boolean) =>
+      setModEnabled(id, modId, enabled),
+    ),
+  )
+  ipcMain.handle(
+    'profiles:syncModsFromDisk',
+    wrapIpc('profiles:syncModsFromDisk', (_e, id: string) => syncModsFromDisk(id)),
+  )
+  ipcMain.handle(
+    'profiles:duplicate',
+    wrapIpc('profiles:duplicate', (_e, id: string, newName?: string) =>
+      duplicateProfile(id, newName),
+    ),
+  )
+  ipcMain.handle(
+    'profiles:setDirty',
+    wrapIpc('profiles:setDirty', (_e, id: string, dirty: boolean) => setProfileDirty(id, dirty)),
+  )
+  ipcMain.handle(
+    'profiles:addModules',
+    wrapIpc('profiles:addModules', (_e, id: string, modules, enabled?: boolean) =>
+      addModulesToProfile(id, modules, enabled),
+    ),
+  )
+  ipcMain.handle(
+    'profiles:activate',
+    wrapIpc('profiles:activate', (_e, id: string, options?: ActivateOptions) =>
+      activateProfile(id, options),
+    ),
+  )
+  ipcMain.handle(
+    'profiles:launch',
+    wrapIpc('profiles:launch', async (_e, id: string) => {
+      const store = getStoreSnapshot()
+      const profile = store.profiles.find((p) => p.id === id)
+      if (!profile) throw new Error('Profile not found.')
+      const discovery = discoverGame(store.gameInstallPath, store.documentsPath)
+      return launchProfile(profile, discovery.installPath)
+    }),
+  )
+  ipcMain.handle(
+    'paths:set',
+    wrapIpc('paths:set', (_e, gameInstallPath: string | null, documentsPath: string | null) =>
+      setPaths(gameInstallPath, documentsPath),
+    ),
+  )
+  ipcMain.handle(
+    'settings:setAllowSteamBetaKeyWrite',
+    wrapIpc('settings:setAllowSteamBetaKeyWrite', (_e, allow: boolean) =>
+      setAllowSteamBetaKeyWrite(allow),
+    ),
+  )
+  ipcMain.handle(
+    'discovery:get',
+    wrapIpc('discovery:get', () => {
+      const store = getStoreSnapshot()
+      return discoverGame(store.gameInstallPath, store.documentsPath)
+    }),
+  )
+  ipcMain.handle(
+    'vault:list',
+    wrapIpc('vault:list', () => listVaultModules()),
+  )
+  ipcMain.handle(
+    'vault:importModules',
+    wrapIpc('vault:importModules', () => {
+      const store = getStoreSnapshot()
+      const discovery = discoverGame(store.gameInstallPath, store.documentsPath)
+      if (!discovery.modulesPath) throw new Error('Modules path not found.')
+      return importModulesIntoVault(discovery.modulesPath)
+    }),
+  )
+  ipcMain.handle(
+    'vault:path',
+    wrapIpc('vault:path', () => getVaultPath()),
+  )
+  ipcMain.handle(
+    'secrets:status',
+    wrapIpc('secrets:status', () => getSecretsStatus()),
+  )
+  ipcMain.handle(
+    'secrets:set',
+    wrapIpc('secrets:set', (_e, patch: SecretsPatch) => setSecrets(patch)),
+  )
+  ipcMain.handle(
+    'stores:search',
+    wrapIpc('stores:search', async (_e, store: string, query: string) => {
+      if (store === 'nexus') return searchNexus(query)
+      if (store === 'steam') return searchSteamWorkshop(query)
+      if (store === 'moddb') return searchModdb(query)
+      throw new Error(`Unknown store: ${store}`)
+    }),
+  )
+  ipcMain.handle(
+    'stores:nexusValidate',
+    wrapIpc('stores:nexusValidate', () => validateNexusKey()),
+  )
+  ipcMain.handle(
+    'stores:nexusFiles',
+    wrapIpc('stores:nexusFiles', (_e, modId: string) => listNexusFiles(modId)),
+  )
+  ipcMain.handle(
+    'stores:nexusDownload',
+    wrapIpc('stores:nexusDownload', async (_e, modId: string, fileId: string) => {
+      const link = await getNexusDownloadLink(modId, fileId)
+      if (!link.ok || !link.url) return link
+      const imported = await downloadUrlToVault(link.url, `nexus-${modId}-${fileId}`)
+      return { ...link, imported }
+    }),
+  )
+  ipcMain.handle(
+    'stores:steamOpen',
+    wrapIpc('stores:steamOpen', (_e, id: string) => openSteamWorkshopItem(id)),
+  )
+  ipcMain.handle(
+    'stores:workshopInfo',
+    wrapIpc('stores:workshopInfo', () => getWorkshopPathInfo()),
+  )
+  ipcMain.handle(
+    'stores:importWorkshop',
+    wrapIpc('stores:importWorkshop', (_e, publishedFileId: string) => {
+      const root = findWorkshopContentPath()
+      if (!root) throw new Error('Workshop content folder not found.')
+      return importWorkshopFolder(path.join(root, publishedFileId))
+    }),
+  )
+  ipcMain.handle(
+    'install:zip',
+    wrapIpc('install:zip', async (_e, zipPath: string) => importZipToVault(zipPath)),
+  )
+  ipcMain.handle(
+    'install:folder',
+    wrapIpc('install:folder', async (_e, folderPath: string) => importFolderToVault(folderPath)),
+  )
+  ipcMain.handle(
+    'dialog:pickDirectory',
+    wrapIpc('dialog:pickDirectory', async (_e, title: string) => {
+      const result = await dialog.showOpenDialog(mainWindow!, {
+        title,
+        properties: ['openDirectory'],
+      })
+      if (result.canceled || !result.filePaths[0]) return null
+      return result.filePaths[0]
+    }),
+  )
+  ipcMain.handle(
+    'dialog:pickZip',
+    wrapIpc('dialog:pickZip', async () => {
+      const result = await dialog.showOpenDialog(mainWindow!, {
+        title: 'Select mod ZIP',
+        properties: ['openFile'],
+        filters: [{ name: 'ZIP archives', extensions: ['zip'] }],
+      })
+      if (result.canceled || !result.filePaths[0]) return null
+      return result.filePaths[0]
+    }),
+  )
+  ipcMain.handle(
+    'shell:openPath',
+    wrapIpc('shell:openPath', async (_e, target: string) => shell.openPath(target)),
+  )
+  ipcMain.handle(
+    'shell:showItem',
+    wrapIpc('shell:showItem', (_e, target: string) => shell.showItemInFolder(target)),
+  )
+  ipcMain.handle(
+    'shell:openExternal',
+    wrapIpc('shell:openExternal', (_e, url: string) => shell.openExternal(url)),
+  )
 }
 
 app.whenReady().then(() => {
   ensureAppDirs()
   registerIpc()
+  buildAppMenu()
   createWindow()
 
   app.on('activate', () => {

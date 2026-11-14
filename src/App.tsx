@@ -7,10 +7,27 @@ import type {
   SecretsStatus,
   StoreSearchResult,
 } from '../electron/types'
+import { EMPTY_STORE } from '../electron/types'
 import './App.css'
 
 type Tab = 'mods' | 'stores' | 'settings' | 'about'
 type StoreKind = 'nexus' | 'steam' | 'moddb'
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        window.clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
 
 export default function App() {
   const [store, setStore] = useState<AppStore | null>(null)
@@ -18,6 +35,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('mods')
   const [busy, setBusy] = useState(false)
+  const [booting, setBooting] = useState(true)
+  const [bootError, setBootError] = useState<string | null>(null)
   const [message, setMessage] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(
     null,
   )
@@ -41,26 +60,62 @@ export default function App() {
   const [storeManualUrl, setStoreManualUrl] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    const [nextStore, nextDiscovery, nextSecrets, vault] = await Promise.all([
-      window.bannerlord.getStore(),
-      window.bannerlord.getDiscovery(),
-      window.bannerlord.getSecretsStatus(),
-      window.bannerlord.listVault(),
-    ])
+    if (!window.bannerlord) {
+      throw new Error(
+        'Preload API missing (window.bannerlord). The Electron preload script failed — restart npm run dev.',
+      )
+    }
+
+    // Load store first so the shell becomes usable even if discovery is slow/fails.
+    const nextStore = await withTimeout(window.bannerlord.getStore(), 15000, 'getStore')
     setStore(nextStore)
-    setDiscovery(nextDiscovery)
-    setSecrets(nextSecrets)
-    setVaultCount(vault.length)
     setSelectedId((prev) => {
       if (prev && nextStore.profiles.some((p) => p.id === prev)) return prev
       return nextStore.activeProfileId ?? nextStore.profiles[0]?.id ?? null
     })
+
+    const secondary = await Promise.allSettled([
+      withTimeout(window.bannerlord.getDiscovery(), 30000, 'getDiscovery'),
+      withTimeout(window.bannerlord.getSecretsStatus(), 10000, 'getSecretsStatus'),
+      withTimeout(window.bannerlord.listVault(), 10000, 'listVault'),
+    ])
+
+    const warnings: string[] = []
+    if (secondary[0].status === 'fulfilled') setDiscovery(secondary[0].value)
+    else warnings.push(`Discovery: ${secondary[0].reason}`)
+    if (secondary[1].status === 'fulfilled') setSecrets(secondary[1].value)
+    else warnings.push(`Secrets: ${secondary[1].reason}`)
+    if (secondary[2].status === 'fulfilled') setVaultCount(secondary[2].value.length)
+    else warnings.push(`Vault: ${secondary[2].reason}`)
+
+    if (warnings.length) {
+      setMessage({
+        kind: 'warn',
+        text: `App loaded with warnings:\n${warnings.join('\n')}`,
+      })
+    }
   }, [])
 
   useEffect(() => {
-    refresh().catch((err: unknown) => {
-      setMessage({ kind: 'error', text: err instanceof Error ? err.message : String(err) })
-    })
+    let cancelled = false
+    setBooting(true)
+    setBootError(null)
+    refresh()
+      .catch((err: unknown) => {
+        if (cancelled) return
+        const text = err instanceof Error ? err.message : String(err)
+        setBootError(text)
+        setMessage({ kind: 'error', text })
+        // Fall back to an empty in-memory store so create actions can still render.
+        // IPC create will still require a working preload.
+        setStore((prev) => prev ?? { ...EMPTY_STORE })
+      })
+      .finally(() => {
+        if (!cancelled) setBooting(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [refresh])
 
   const selected = useMemo(
@@ -208,6 +263,13 @@ export default function App() {
   }
 
   async function onCreate() {
+    if (!window.bannerlord) {
+      setMessage({
+        kind: 'error',
+        text: 'Cannot create profile — preload API is unavailable. Restart the app.',
+      })
+      return
+    }
     const name = window.prompt('New profile name')
     if (!name?.trim()) return
     await withBusy(async () => {
@@ -217,6 +279,7 @@ export default function App() {
       })
       await refresh()
       setSelectedId(profile.id)
+      setBootError(null)
       setMessage({
         kind: 'ok',
         text: `Created "${profile.name}" from current LauncherData / Modules (${profile.mods.length} mods).`,
@@ -416,8 +479,73 @@ export default function App() {
     })
   }
 
+  useEffect(() => {
+    if (!window.bannerlord?.onUiCommand) return
+    return window.bannerlord.onUiCommand((command) => {
+      if (command === 'newProfile') void onCreate()
+      if (command === 'captureCurrent') void onRefreshFromDisk()
+    })
+    // Rebind when selection changes so Capture uses the selected profile.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId])
+
+  if (booting && !store) {
+    return (
+      <div className="boot-shell">
+        <div className="brand">
+          <h1>Bannerlord Mod Profiles</h1>
+          <p>Starting…</p>
+        </div>
+        <div className="empty">Loading Bannerlord Mod Profiles…</div>
+        <button
+          className="btn primary"
+          onClick={() => {
+            setBooting(true)
+            setBootError(null)
+            void refresh()
+              .catch((err: unknown) => {
+                setBootError(err instanceof Error ? err.message : String(err))
+                setStore((prev) => prev ?? { ...EMPTY_STORE })
+              })
+              .finally(() => setBooting(false))
+          }}
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
   if (!store) {
-    return <div className="empty">Loading Bannerlord Mod Profiles…</div>
+    return (
+      <div className="boot-shell">
+        <div className="brand">
+          <h1>Bannerlord Mod Profiles</h1>
+          <p>Could not finish startup</p>
+        </div>
+        {bootError && <div className="callout error">{bootError}</div>}
+        <div className="toolbar-group">
+          <button className="btn primary" onClick={onCreate}>
+            New profile
+          </button>
+          <button
+            className="btn"
+            onClick={() => {
+              setBooting(true)
+              setBootError(null)
+              void refresh()
+                .catch((err: unknown) => {
+                  setBootError(err instanceof Error ? err.message : String(err))
+                  setStore((prev) => prev ?? { ...EMPTY_STORE })
+                })
+                .finally(() => setBooting(false))
+            }}
+          >
+            Retry load
+          </button>
+        </div>
+      </div>
+    )
   }
 
   const dirtyCurrent =
@@ -434,11 +562,30 @@ export default function App() {
           <p>Vaulted loadouts · version switch · Steam / Nexus / ModDB</p>
         </div>
 
-        <div className="sidebar-actions">
-          <button className="btn primary" disabled={busy} onClick={onCreate}>
-            New profile
+        {bootError && <div className="callout error">{bootError}</div>}
+
+        <div className="create-hero">
+          <button className="btn primary create-btn" disabled={busy} onClick={onCreate}>
+            New Profile
           </button>
-          <button className="btn ghost" disabled={busy} onClick={() => refresh()}>
+          <button className="btn" disabled={busy || !selected} onClick={onRefreshFromDisk}>
+            Capture current Modules
+          </button>
+          <button
+            className="btn ghost"
+            disabled={busy}
+            onClick={() => {
+              setBooting(true)
+              void refresh()
+                .catch((err: unknown) =>
+                  setMessage({
+                    kind: 'error',
+                    text: err instanceof Error ? err.message : String(err),
+                  }),
+                )
+                .finally(() => setBooting(false))
+            }}
+          >
             Refresh
           </button>
         </div>

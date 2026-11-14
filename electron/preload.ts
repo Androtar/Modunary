@@ -77,6 +77,7 @@ export interface BannerlordApi {
   openPath: (target: string) => Promise<string>
   showItemInFolder: (target: string) => Promise<void>
   openExternal: (url: string) => Promise<void>
+  onUiCommand: (handler: (command: 'newProfile' | 'captureCurrent') => void) => () => void
 }
 
 const api: BannerlordApi = {
@@ -124,6 +125,16 @@ const api: BannerlordApi = {
   openPath: (target) => ipcRenderer.invoke('shell:openPath', target),
   showItemInFolder: (target) => ipcRenderer.invoke('shell:showItem', target),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  onUiCommand: (handler) => {
+    const onNew = () => handler('newProfile')
+    const onCapture = () => handler('captureCurrent')
+    ipcRenderer.on('ui:newProfile', onNew)
+    ipcRenderer.on('ui:captureCurrent', onCapture)
+    return () => {
+      ipcRenderer.removeListener('ui:newProfile', onNew)
+      ipcRenderer.removeListener('ui:captureCurrent', onCapture)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('bannerlord', api)

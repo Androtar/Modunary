@@ -15,13 +15,32 @@ export interface AppSecrets {
   moddbPassword?: string
 }
 
+function encryptionAvailable(): boolean {
+  try {
+    // Prefer async API when present; fall back for older Electron.
+    const anyStore = safeStorage as unknown as {
+      isAsyncEncryptionAvailable?: () => boolean
+      isEncryptionAvailable?: () => boolean
+    }
+    if (typeof anyStore.isAsyncEncryptionAvailable === 'function') {
+      return Boolean(anyStore.isAsyncEncryptionAvailable())
+    }
+    if (typeof anyStore.isEncryptionAvailable === 'function') {
+      return Boolean(anyStore.isEncryptionAvailable())
+    }
+  } catch {
+    return false
+  }
+  return false
+}
+
 function readRaw(): AppSecrets {
   ensureAppDirs()
   const encPath = getSecretsPath()
   const plainPath = getSecretsPlainFallbackPath()
 
   try {
-    if (fs.existsSync(encPath) && safeStorage.isEncryptionAvailable()) {
+    if (fs.existsSync(encPath) && encryptionAvailable()) {
       const buf = fs.readFileSync(encPath)
       const json = safeStorage.decryptString(buf)
       return JSON.parse(json) as AppSecrets
@@ -44,7 +63,7 @@ function readRaw(): AppSecrets {
 function writeRaw(secrets: AppSecrets): void {
   ensureAppDirs()
   const json = JSON.stringify(secrets, null, 2)
-  if (safeStorage.isEncryptionAvailable()) {
+  if (encryptionAvailable()) {
     const enc = safeStorage.encryptString(json)
     fs.writeFileSync(getSecretsPath(), enc)
     // Remove plaintext fallback if we upgraded to encrypted.
@@ -91,7 +110,7 @@ export function getSecretsStatus(): SecretsStatus {
     moddbPasswordSet: Boolean(s.moddbPassword),
     nexusAppIdSet: Boolean(s.nexusAppId),
     hooks: {
-      secretsFile: safeStorage.isEncryptionAvailable()
+      secretsFile: encryptionAvailable()
         ? getSecretsPath()
         : getSecretsPlainFallbackPath(),
       envNexus: 'NEXUS_API_KEY',
