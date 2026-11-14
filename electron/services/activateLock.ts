@@ -204,3 +204,20 @@ export function stopSteamBusyMonitor(): void {
   clearInterval(monitorTimer)
   monitorTimer = null
 }
+
+/** Force-clear Modunary activate lock (stuck session) and re-poll Steam. */
+export async function forceClearOperationLock(): Promise<ActivateLockState> {
+  if (activateOnly.active) {
+    activateOnly = { ...ACTIVATE_IDLE }
+  }
+  await pollSteamOnce()
+  emit()
+  return compose()
+}
+
+/** Re-read Steam busy immediately (does not clear a real activate). */
+export async function refreshSteamBusyNow(): Promise<ActivateLockState> {
+  await pollSteamOnce()
+  emit()
+  return compose()
+}

@@ -57,6 +57,8 @@ export interface BannerlordApi {
   onActivateProgress: (handler: (event: ActivateProgressEvent) => void) => () => void
   getActivateLock: () => Promise<ActivateLockState>
   onActivateLock: (handler: (state: ActivateLockState) => void) => () => void
+  refreshSteamBusy: () => Promise<ActivateLockState>
+  forceClearActivateLock: () => Promise<ActivateLockState>
   launchProfile: (id: string) => Promise<LaunchResult>
   setPaths: (gameInstallPath: string | null, documentsPath: string | null) => Promise<AppStore>
   setAllowSteamBetaKeyWrite: (allow: boolean) => Promise<AppStore>
@@ -156,6 +158,8 @@ const api: BannerlordApi = {
       ipcRenderer.removeListener('activate:lock', listener)
     }
   },
+  refreshSteamBusy: () => ipcRenderer.invoke('activate:refreshSteamBusy'),
+  forceClearActivateLock: () => ipcRenderer.invoke('activate:forceClearLock'),
   launchProfile: (id) => ipcRenderer.invoke('profiles:launch', id),
   setPaths: (gameInstallPath, documentsPath) =>
     ipcRenderer.invoke('paths:set', gameInstallPath, documentsPath),

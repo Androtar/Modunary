@@ -1142,6 +1142,50 @@ export default function App() {
               ? `OK (activate running: ${activateLock.message || '…'})`
               : `idle${activateLock?.steamDetail ? ` · ${activateLock.steamDetail}` : ''}`}
         </div>
+        <div className="toolbar-group" style={{ marginTop: '-0.35rem' }}>
+          <button
+            className="btn ghost"
+            style={{ fontSize: '0.78rem', padding: '0.3rem 0.55rem' }}
+            disabled={busy}
+            title="Re-check Steam download/validate state now"
+            onClick={() =>
+              void (async () => {
+                const lock = await window.bannerlord.refreshSteamBusy()
+                setActivateLock(lock)
+                setMessage({
+                  kind: lock.blocked ? 'warn' : 'ok',
+                  text: lock.blocked
+                    ? `Still blocked: ${lock.tooltip || lock.message || lock.steamDetail || 'busy'}`
+                    : `Steam idle — Activate/Launch unlocked. ${lock.steamDetail || ''}`.trim(),
+                })
+              })()
+            }
+          >
+            Refresh Steam status
+          </button>
+          {activateLaunchBlocked && (
+            <button
+              className="btn ghost"
+              style={{ fontSize: '0.78rem', padding: '0.3rem 0.55rem' }}
+              disabled={busy}
+              title="Clear a stuck Modunary activate lock and re-poll Steam (use if buttons stay grey while Steam is idle)"
+              onClick={() =>
+                void (async () => {
+                  const lock = await window.bannerlord.forceClearActivateLock()
+                  setActivateLock(lock)
+                  setMessage({
+                    kind: lock.blocked ? 'warn' : 'ok',
+                    text: lock.blocked
+                      ? `Cleared activate lock, but Steam still busy: ${lock.steamDetail || lock.message}`
+                      : 'Cleared lock — Activate/Launch should be enabled.',
+                  })
+                })()
+              }
+            >
+              Clear false lock
+            </button>
+          )}
+        </div>
       </aside>
 
       <main className="main">

@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url'
 import { activateProfile } from './services/activate'
 import {
   assertOperationAllowed,
+  forceClearOperationLock,
   getActivateLock,
+  refreshSteamBusyNow,
   startSteamBusyMonitor,
   subscribeActivateLock,
 } from './services/activateLock'
@@ -445,6 +447,14 @@ function registerIpc() {
   ipcMain.handle(
     'activate:getLock',
     wrapIpc('activate:getLock', () => getActivateLock()),
+  )
+  ipcMain.handle(
+    'activate:refreshSteamBusy',
+    wrapIpc('activate:refreshSteamBusy', () => refreshSteamBusyNow()),
+  )
+  ipcMain.handle(
+    'activate:forceClearLock',
+    wrapIpc('activate:forceClearLock', () => forceClearOperationLock()),
   )
   ipcMain.handle(
     'paths:set',

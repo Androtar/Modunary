@@ -128,20 +128,38 @@ function stateFlagsBusy(flags: number, corroborated: boolean): string | null {
   return null
 }
 
+/**
+ * List Steam process command lines, then filter in JS.
+ * IMPORTANT: do not embed download/validate needles in the PowerShell -Command string —
+ * that permanently self-matched and kept Activate/Launch locked after every poll.
+ */
 async function bannerlordProcessHint(): Promise<string | null> {
-  // Narrow: require validate/update/download for app 261550 — not mere "Bannerlord" in Steam UI.
   try {
     const { stdout } = await execFileAsync(
       'powershell',
       [
         '-NoProfile',
         '-Command',
-        "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and ($_.CommandLine -match 'steam://validate/261550|appid[= ]261550.*update|\\\\downloading\\\\261550') } | Select-Object -First 2 -ExpandProperty CommandLine",
+        "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(steam|steamwebhelper|steamerrorreporter)\\.exe$' -and $_.CommandLine } | Select-Object -ExpandProperty CommandLine",
       ],
-      { windowsHide: true, timeout: 4000, maxBuffer: 1024 * 1024 },
+      { windowsHide: true, timeout: 4000, maxBuffer: 2 * 1024 * 1024 },
     )
-    const line = stdout.trim().split(/\r?\n/).find(Boolean)
-    if (line) return 'Steam process actively validating/updating Bannerlord (261550)'
+    const appId = STEAM_APP_ID
+    const needles = [
+      `steam://validate/${appId}`,
+      `validate/${appId}`,
+      `downloading\\${appId}`,
+      `downloading/${appId}`,
+    ]
+    for (const line of stdout.split(/\r?\n/)) {
+      const cmd = line.trim()
+      if (!cmd) continue
+      // Never treat our own probe / node / electron as evidence.
+      if (/powershell|modunary|BannerlordModApp|electron\.exe/i.test(cmd)) continue
+      if (needles.some((n) => cmd.toLowerCase().includes(n.toLowerCase()))) {
+        return `Steam process actively validating/updating Bannerlord (${appId})`
+      }
+    }
   } catch {
     // ignore — detection is best-effort
   }
