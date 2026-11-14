@@ -77,7 +77,9 @@ export interface BannerlordApi {
   openPath: (target: string) => Promise<string>
   showItemInFolder: (target: string) => Promise<void>
   openExternal: (url: string) => Promise<void>
-  onUiCommand: (handler: (command: 'newProfile' | 'captureCurrent') => void) => () => void
+  onUiCommand: (
+    handler: (command: 'newProfile' | 'captureCurrent' | 'renameProfile') => void,
+  ) => () => void
 }
 
 const api: BannerlordApi = {
@@ -128,11 +130,14 @@ const api: BannerlordApi = {
   onUiCommand: (handler) => {
     const onNew = () => handler('newProfile')
     const onCapture = () => handler('captureCurrent')
+    const onRename = () => handler('renameProfile')
     ipcRenderer.on('ui:newProfile', onNew)
     ipcRenderer.on('ui:captureCurrent', onCapture)
+    ipcRenderer.on('ui:renameProfile', onRename)
     return () => {
       ipcRenderer.removeListener('ui:newProfile', onNew)
       ipcRenderer.removeListener('ui:captureCurrent', onCapture)
+      ipcRenderer.removeListener('ui:renameProfile', onRename)
     }
   },
 }

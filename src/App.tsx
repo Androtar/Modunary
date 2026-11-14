@@ -559,8 +559,9 @@ export default function App() {
     return window.bannerlord.onUiCommand((command) => {
       if (command === 'newProfile') openCreateModal()
       if (command === 'captureCurrent') onRefreshFromDisk()
+      if (command === 'renameProfile') onRename()
     })
-    // Rebind when selection changes so Capture uses the selected profile.
+    // Rebind when selection changes so Capture/Rename use the selected profile.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, store?.profiles.length])
 
@@ -755,8 +756,14 @@ export default function App() {
             .map((p) => (
               <button
                 key={p.id}
+                type="button"
+                title="Click to select · Double-click to rename"
                 className={`profile-item ${p.id === selectedId ? 'active' : ''}`}
                 onClick={() => setSelectedId(p.id)}
+                onDoubleClick={() => {
+                  setSelectedId(p.id)
+                  setNameModal({ mode: 'rename', value: p.name, captureCurrent: false })
+                }}
               >
                 <span className="name">{p.name}</span>
                 <span className="meta">
@@ -786,11 +793,21 @@ export default function App() {
         ) : (
           <>
             <div className="toolbar">
-              <div>
+              <div className="title-row">
                 <h2 style={{ margin: 0, fontFamily: 'var(--font-display)' }}>{selected.name}</h2>
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                <button
+                  className="btn"
+                  disabled={busy}
+                  onClick={onRename}
+                  title="Rename profile (F2)"
+                >
+                  Rename
+                </button>
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', width: '100%' }}>
                   {store.activeProfileId === selected.id ? 'Currently active · ' : ''}
                   Updated {new Date(selected.updatedAt).toLocaleString()}
+                  {' · '}
+                  Double-click a sidebar profile to rename
                 </div>
               </div>
               <div className="toolbar-group">
@@ -808,9 +825,6 @@ export default function App() {
                 </button>
                 <button className="btn" disabled={busy} onClick={onDuplicate}>
                   Duplicate
-                </button>
-                <button className="btn" disabled={busy} onClick={onRename}>
-                  Rename
                 </button>
                 <button className="btn danger" disabled={busy} onClick={onDelete}>
                   Delete

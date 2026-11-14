@@ -100,40 +100,75 @@ function createWindow() {
       .executeJavaScript('Boolean(window.bannerlord)')
       .then(async (ok) => {
         console.log('[main] window.bannerlord present=', ok)
-        if (!ok || process.env.BMP_SMOKE_CREATE !== '1') return
-        const js = `
-          (async () => {
-            const ipcName = 'IPC Smoke ' + Date.now();
-            const created = await window.bannerlord.createProfile({
-              name: ipcName,
-              captureCurrent: true,
-            });
-            const btn = document.querySelector('.create-btn');
-            if (!btn) return { ipc: created.name, ui: 'NO_CREATE_BTN' };
-            btn.click();
-            await new Promise(r => setTimeout(r, 400));
-            const input = document.querySelector('#profileNameBoot');
-            if (!input) return { ipc: created.name, ui: 'NO_MODAL_INPUT' };
-            const createBtn = [...document.querySelectorAll('.modal .btn.primary')]
-              .find(b => /create/i.test(b.textContent || ''));
-            if (!createBtn) return { ipc: created.name, ui: 'NO_CREATE_CONFIRM' };
-            // Confirm with default name from modal state
-            createBtn.click();
-            await new Promise(r => setTimeout(r, 2500));
-            const store = await window.bannerlord.getStore();
-            return {
-              ipc: created.name,
-              ui: 'MODAL_OK',
-              profileCount: store.profiles.length,
-              names: store.profiles.map(p => p.name),
-            };
-          })()
-        `
-        try {
-          const result = await mainWindow?.webContents.executeJavaScript(js)
-          console.log('[main] BMP_SMOKE_CREATE result=', JSON.stringify(result))
-        } catch (err) {
-          console.error('[main] BMP_SMOKE_CREATE failed', err)
+        if (ok && process.env.BMP_SMOKE_CREATE === '1') {
+          const js = `
+            (async () => {
+              const ipcName = 'IPC Smoke ' + Date.now();
+              const created = await window.bannerlord.createProfile({
+                name: ipcName,
+                captureCurrent: true,
+              });
+              const btn = document.querySelector('.create-btn');
+              if (!btn) return { ipc: created.name, ui: 'NO_CREATE_BTN' };
+              btn.click();
+              await new Promise(r => setTimeout(r, 400));
+              const input = document.querySelector('#profileNameBoot');
+              if (!input) return { ipc: created.name, ui: 'NO_MODAL_INPUT' };
+              const createBtn = [...document.querySelectorAll('.modal .btn.primary')]
+                .find(b => /create/i.test(b.textContent || ''));
+              if (!createBtn) return { ipc: created.name, ui: 'NO_CREATE_CONFIRM' };
+              createBtn.click();
+              await new Promise(r => setTimeout(r, 2500));
+              const store = await window.bannerlord.getStore();
+              return {
+                ipc: created.name,
+                ui: 'MODAL_OK',
+                profileCount: store.profiles.length,
+                names: store.profiles.map(p => p.name),
+              };
+            })()
+          `
+          try {
+            const result = await mainWindow?.webContents.executeJavaScript(js)
+            console.log('[main] BMP_SMOKE_CREATE result=', JSON.stringify(result))
+          } catch (err) {
+            console.error('[main] BMP_SMOKE_CREATE failed', err)
+          }
+        }
+        if (ok && process.env.BMP_SMOKE_RENAME === '1') {
+          const js = `
+            (async () => {
+              let store = await window.bannerlord.getStore();
+              let profile = store.profiles[0];
+              if (!profile) {
+                profile = await window.bannerlord.createProfile({
+                  name: 'Rename Target',
+                  captureCurrent: false,
+                });
+                store = await window.bannerlord.getStore();
+              }
+              const idBefore = profile.id;
+              const newName = 'Renamed ' + Date.now();
+              const renamed = await window.bannerlord.renameProfile(idBefore, newName);
+              // Also open rename modal UI
+              const renameBtn = [...document.querySelectorAll('button')]
+                .find(b => b.textContent?.trim() === 'Rename');
+              renameBtn?.click();
+              await new Promise(r => setTimeout(r, 300));
+              const modalOpen = Boolean(document.querySelector('#profileNameBoot'));
+              return {
+                idStable: renamed.id === idBefore,
+                name: renamed.name,
+                modalOpen,
+              };
+            })()
+          `
+          try {
+            const result = await mainWindow?.webContents.executeJavaScript(js)
+            console.log('[main] BMP_SMOKE_RENAME result=', JSON.stringify(result))
+          } catch (err) {
+            console.error('[main] BMP_SMOKE_RENAME failed', err)
+          }
         }
       })
       .catch((err) => console.error('[main] bannerlord probe failed', err))
@@ -160,6 +195,13 @@ function buildAppMenu() {
           accelerator: 'CmdOrCtrl+N',
           click: () => {
             mainWindow?.webContents.send('ui:newProfile')
+          },
+        },
+        {
+          label: 'Rename Profile',
+          accelerator: 'F2',
+          click: () => {
+            mainWindow?.webContents.send('ui:renameProfile')
           },
         },
         {

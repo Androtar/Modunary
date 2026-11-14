@@ -193,6 +193,14 @@ button {
   justify-content: space-between;
 }
 
+.title-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.75rem;
+  align-items: center;
+  max-width: min(560px, 100%);
+}
+
 .toolbar-group {
   display: flex;
   flex-wrap: wrap;
