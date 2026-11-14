@@ -145,19 +145,25 @@ export function createProfile(input: CreateProfileInput): ModProfile {
     discovery.blse.installed &&
     (enabledIds.has('Bannerlord.Harmony') || enabledIds.has('Bannerlord.ButterLib'))
 
+  const capturing = input.captureCurrent !== false
   const profile: ModProfile = {
     id: randomUUID(),
     name,
     createdAt: nowIso(),
     updatedAt: nowIso(),
-    gameVersion: input.gameVersion || discovery.detectedGameVersion || 'unknown',
-    steamBetaBranch: discovery.steamBetaBranch || '',
+    gameVersion: capturing
+      ? discovery.detectedGameVersion || input.gameVersion || 'unknown'
+      : input.gameVersion || discovery.detectedGameVersion || 'unknown',
+    steamBetaBranch: capturing
+      ? discovery.steamBetaBranch || ''
+      : input.steamBetaBranch ?? '',
     mods,
     settings: {
       ...DEFAULT_PROFILE_SETTINGS,
-      requiresBlse,
-      preferredLauncher: requiresBlse ? 'blse' : 'steam',
+      requiresBlse: capturing ? requiresBlse : false,
+      preferredLauncher: capturing && requiresBlse ? 'blse' : 'steam',
     },
+    loadOrderUndo: null,
   }
 
   store.profiles.push(profile)
@@ -233,10 +239,19 @@ export function refreshProfileFromDisk(id: string): ModProfile {
   return profile
 }
 
-export function reorderMods(id: string, orderedIds: string[]): ModProfile {
+export function reorderMods(
+  id: string,
+  orderedIds: string[],
+  options?: { saveUndo?: boolean },
+): ModProfile {
   const store = loadStore()
   const profile = store.profiles.find((p) => p.id === id)
   if (!profile) throw new Error('Profile not found.')
+  if (options?.saveUndo) {
+    profile.loadOrderUndo = [...profile.mods]
+      .sort((a, b) => a.order - b.order)
+      .map((m) => m.id)
+  }
   const byId = new Map(profile.mods.map((m) => [m.id, m]))
   const next: ModEntry[] = []
   orderedIds.forEach((modId, order) => {
@@ -255,6 +270,19 @@ export function reorderMods(id: string, orderedIds: string[]): ModProfile {
   profile.dirty = true
   saveStore(store)
   return profile
+}
+
+export function undoLoadOrder(id: string): ModProfile {
+  const store = loadStore()
+  const profile = store.profiles.find((p) => p.id === id)
+  if (!profile) throw new Error('Profile not found.')
+  if (!profile.loadOrderUndo?.length) {
+    throw new Error('No load-order undo available for this profile.')
+  }
+  const previous = profile.loadOrderUndo
+  profile.loadOrderUndo = null
+  saveStore(store)
+  return reorderMods(id, previous)
 }
 
 export function setModEnabled(id: string, modId: string, enabled: boolean): ModProfile {

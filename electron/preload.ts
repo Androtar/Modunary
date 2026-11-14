@@ -6,8 +6,10 @@ import type {
   CreateProfileInput,
   GameDiscovery,
   LaunchResult,
+  LoadOrderScanResult,
   ModProfile,
   SecretsStatus,
+  SteamVersionOption,
   StoreSearchResponse,
 } from './types'
 
@@ -23,7 +25,14 @@ export interface BannerlordApi {
     patch: Partial<Pick<ModProfile, 'gameVersion' | 'steamBetaBranch' | 'mods' | 'settings'>>,
   ) => Promise<ModProfile>
   refreshProfileFromDisk: (id: string) => Promise<ModProfile>
-  reorderMods: (id: string, orderedIds: string[]) => Promise<ModProfile>
+  reorderMods: (
+    id: string,
+    orderedIds: string[],
+    options?: { saveUndo?: boolean },
+  ) => Promise<ModProfile>
+  undoLoadOrder: (id: string) => Promise<ModProfile>
+  scanLoadOrder: (id: string) => Promise<LoadOrderScanResult>
+  listSteamVersions: () => Promise<{ options: SteamVersionOption[]; notes: string[] }>
   setModEnabled: (id: string, modId: string, enabled: boolean) => Promise<ModProfile>
   syncModsFromDisk: (id: string) => Promise<{ profile: ModProfile; added: number }>
   duplicateProfile: (id: string, newName?: string) => Promise<ModProfile>
@@ -91,7 +100,11 @@ const api: BannerlordApi = {
   setActiveProfile: (id) => ipcRenderer.invoke('profiles:setActive', id),
   updateProfile: (id, patch) => ipcRenderer.invoke('profiles:update', id, patch),
   refreshProfileFromDisk: (id) => ipcRenderer.invoke('profiles:refreshFromDisk', id),
-  reorderMods: (id, orderedIds) => ipcRenderer.invoke('profiles:reorderMods', id, orderedIds),
+  reorderMods: (id, orderedIds, options) =>
+    ipcRenderer.invoke('profiles:reorderMods', id, orderedIds, options),
+  undoLoadOrder: (id) => ipcRenderer.invoke('profiles:undoLoadOrder', id),
+  scanLoadOrder: (id) => ipcRenderer.invoke('profiles:scanLoadOrder', id),
+  listSteamVersions: () => ipcRenderer.invoke('steam:listVersions'),
   setModEnabled: (id, modId, enabled) =>
     ipcRenderer.invoke('profiles:setModEnabled', id, modId, enabled),
   syncModsFromDisk: (id) => ipcRenderer.invoke('profiles:syncModsFromDisk', id),

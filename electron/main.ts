@@ -1,9 +1,10 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { activateProfile } from './services/activate'
 import { discoverGame } from './services/discovery'
+import { computeLoadOrder, scanModuleDependencies } from './services/loadOrder'
 import {
   downloadUrlToVault,
   importFolderToVault,
@@ -28,8 +29,10 @@ import {
   setPaths,
   setProfileDirty,
   syncModsFromDisk,
+  undoLoadOrder,
   updateProfile,
 } from './services/profiles'
+import { listSteamBannerlordVersions } from './services/steamVersions'
 import { getSecretsStatus, setSecrets } from './services/secrets'
 import { searchModdb } from './services/stores/moddb'
 import {
@@ -59,8 +62,42 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 process.env.APP_ROOT = path.join(__dirname, '..')
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL
 const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
+const APP_ROOT = process.env.APP_ROOT
+
+function migrateUserDataIfNeeded(): void {
+  const appData = app.getPath('appData')
+  const nextDir = path.join(appData, 'modunary')
+  const prevDir = path.join(appData, 'bannerlord-mod-profiles')
+  app.setName('Modunary')
+  app.setPath('userData', nextDir)
+  fs.mkdirSync(nextDir, { recursive: true })
+  const nextStore = path.join(nextDir, 'store.json')
+  const prevStore = path.join(prevDir, 'store.json')
+  if (!fs.existsSync(nextStore) && fs.existsSync(prevStore)) {
+    try {
+      fs.copyFileSync(prevStore, nextStore)
+      console.log('[main] migrated store.json from bannerlord-mod-profiles → modunary')
+    } catch (err) {
+      console.error('[main] store migration failed', err)
+    }
+  }
+}
 
 let mainWindow: BrowserWindow | null = null
+
+function resolveAppIcon(): Electron.NativeImage | undefined {
+  const candidates = [
+    path.join(APP_ROOT, 'public', 'modunary-logo.png'),
+    path.join(APP_ROOT, 'build', 'icon.png'),
+    path.join(APP_ROOT, 'dist', 'modunary-logo.png'),
+  ]
+  for (const p of candidates) {
+    if (!fs.existsSync(p)) continue
+    const img = nativeImage.createFromPath(p)
+    if (!img.isEmpty()) return img
+  }
+  return undefined
+}
 
 function resolvePreloadPath(): string {
   // Must be .cjs because package.json sets "type": "module" (plain .js is ESM).
@@ -76,13 +113,15 @@ function createWindow() {
   const preloadPath = resolvePreloadPath()
   console.log('[main] preload:', preloadPath, 'exists=', fs.existsSync(preloadPath))
 
+  const icon = resolveAppIcon()
   mainWindow = new BrowserWindow({
     width: 1360,
     height: 900,
     minWidth: 1000,
     minHeight: 680,
-    title: 'Bannerlord Mod Profiles',
+    title: 'Modunary',
     backgroundColor: '#1a1510',
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -286,9 +325,33 @@ function registerIpc() {
   )
   ipcMain.handle(
     'profiles:reorderMods',
-    wrapIpc('profiles:reorderMods', (_e, id: string, orderedIds: string[]) =>
-      reorderMods(id, orderedIds),
+    wrapIpc(
+      'profiles:reorderMods',
+      (_e, id: string, orderedIds: string[], options?: { saveUndo?: boolean }) =>
+        reorderMods(id, orderedIds, options),
     ),
+  )
+  ipcMain.handle(
+    'profiles:undoLoadOrder',
+    wrapIpc('profiles:undoLoadOrder', (_e, id: string) => undoLoadOrder(id)),
+  )
+  ipcMain.handle(
+    'profiles:scanLoadOrder',
+    wrapIpc('profiles:scanLoadOrder', (_e, id: string) => {
+      const store = getStoreSnapshot()
+      const profile = store.profiles.find((p) => p.id === id)
+      if (!profile) throw new Error('Profile not found.')
+      const discovery = discoverGame(store.gameInstallPath, store.documentsPath)
+      const deps = scanModuleDependencies(discovery.modulesPath, profile.mods)
+      return computeLoadOrder(profile.mods, deps)
+    }),
+  )
+  ipcMain.handle(
+    'steam:listVersions',
+    wrapIpc('steam:listVersions', async () => {
+      const store = getStoreSnapshot()
+      return listSteamBannerlordVersions(store.gameInstallPath)
+    }),
   )
   ipcMain.handle(
     'profiles:setModEnabled',
@@ -462,6 +525,9 @@ function registerIpc() {
     wrapIpc('shell:openExternal', (_e, url: string) => shell.openExternal(url)),
   )
 }
+
+// Must run before ready so userData / app name stick.
+migrateUserDataIfNeeded()
 
 app.whenReady().then(() => {
   ensureAppDirs()

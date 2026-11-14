@@ -1,8 +1,9 @@
 {
-  "name": "bannerlord-mod-profiles",
+  "name": "modunary",
   "private": true,
-  "version": "0.2.0",
-  "description": "Desktop app for Mount & Blade II: Bannerlord mod profiles",
+  "version": "0.3.0",
+  "productName": "Modunary",
+  "description": "Modunary — Mount & Blade II: Bannerlord mod profile manager",
   "author": "Stephen",
   "type": "module",
   "main": "dist-electron/main.js",

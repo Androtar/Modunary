@@ -1,11 +1,11 @@
-# Bannerlord Mod Profiles
+# Modunary
 
-Desktop app for Mount & Blade II: Bannerlord **mod profiles** with per-profile **module vaulting**, opt-in **Steam version switch**, **BLSE/Steam launch**, and **Steam / Nexus / ModDB** browsing.
+Desktop app for Mount & Blade II: Bannerlord **mod profiles** with per-profile **module vaulting**, opt-in **Steam version switch**, **BLSE/Steam launch**, **Steam version pick on create**, **load-order scan**, and **Steam / Nexus / ModDB** browsing.
 
 ## Stack
 
 - Electron + Vite + React + TypeScript
-- JSON store + vault under Electron `userData`
+- JSON store + vault under Electron `userData` (`%APPDATA%\modunary`, migrated from `bannerlord-mod-profiles`)
 - Secrets via Electron `safeStorage` (env fallbacks supported)
 
 ## Run
@@ -20,7 +20,10 @@ npm run dev
 
 | Feature | Status |
 | --- | --- |
-| Profile CRUD / duplicate / dirty flag | Implemented |
+| Profile CRUD / duplicate / dirty / rename | Implemented |
+| Create with capture → infer version from install | Implemented |
+| Create without capture → Steam version picker | Implemented |
+| Load-order scan (SubModule.xml deps) + undo | Implemented |
 | Per-profile vault deploy on activate (junction/copy) | Implemented |
 | LauncherData backup + write | Implemented |
 | Version-switch modal (Continue / Cancel + optional save-as) | Implemented |
@@ -44,18 +47,20 @@ Paste in **Paths & version → Store credentials**, or set env vars before launc
 
 | What | Location |
 | --- | --- |
-| App store | `%APPDATA%\bannerlord-mod-profiles\store.json` |
-| Module vault | `%APPDATA%\bannerlord-mod-profiles\vault\modules\` |
-| Secrets | `%APPDATA%\bannerlord-mod-profiles\secrets.enc.json` |
-| Backups | `%APPDATA%\bannerlord-mod-profiles\backups\` |
+| App store | `%APPDATA%\modunary\store.json` |
+| Module vault | `%APPDATA%\modunary\vault\modules\` |
+| Secrets | `%APPDATA%\modunary\secrets.enc.json` |
+| Backups | `%APPDATA%\modunary\backups\` |
 | Game Modules | `<Bannerlord>\Modules\` |
 | LauncherData | `Documents\...\Configs\LauncherData.xml` |
 
 ## Project layout
 
 ```
-electron/           Main process, IPC, vault, stores, activate, launch
+electron/           Main process, IPC, vault, stores, activate, launch, Steam versions, load order
 src/                React UI (profiles, stores, version modal)
+public/             Modunary logo / favicon
+build/              Packaged app icon
 ```
 
 Architecture note (Project Context): `docs/bannerlord-mod-profiles.md`

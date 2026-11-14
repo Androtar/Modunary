@@ -32,6 +32,8 @@ export interface ModProfile {
   settings: ProfileSettings
   /** True when UI edits differ from last saved/activated snapshot (renderer-tracked, persisted lightly). */
   dirty?: boolean
+  /** Previous mod id order for undoing a load-order scan. */
+  loadOrderUndo?: string[] | null
 }
 
 export interface AppPaths {
@@ -155,6 +157,21 @@ export interface CreateProfileInput {
   name: string
   captureCurrent?: boolean
   gameVersion?: string
+  steamBetaBranch?: string
+}
+
+export interface SteamVersionOption {
+  label: string
+  gameVersion: string
+  steamBetaBranch: string
+  source: 'current' | 'public' | 'manifest-history' | 'profile-history' | 'steamcmd' | 'known'
+  note?: string
+}
+
+export interface LoadOrderScanResult {
+  orderedIds: string[]
+  warnings: string[]
+  notes: string[]
 }
 
 export interface LaunchResult {

@@ -5,10 +5,13 @@ import type {
   GameDiscovery,
   ModProfile,
   SecretsStatus,
+  SteamVersionOption,
   StoreSearchResult,
 } from '../electron/types'
 import { EMPTY_STORE } from '../electron/types'
 import './App.css'
+
+const logoUrl = '/modunary-logo.png'
 
 type Tab = 'mods' | 'stores' | 'settings' | 'about'
 type StoreKind = 'nexus' | 'steam' | 'moddb'
@@ -64,7 +67,11 @@ export default function App() {
     mode: 'create' | 'rename'
     value: string
     captureCurrent: boolean
+    gameVersion: string
+    steamBetaBranch: string
   } | null>(null)
+  const [steamVersions, setSteamVersions] = useState<SteamVersionOption[]>([])
+  const [steamVersionNotes, setSteamVersionNotes] = useState<string[]>([])
   const [confirmModal, setConfirmModal] = useState<{
     mode: 'delete' | 'capture'
     title: string
@@ -279,7 +286,7 @@ export default function App() {
     return `Profile ${n}`
   }
 
-  function openCreateModal() {
+  async function openCreateModal() {
     if (!window.bannerlord) {
       setMessage({
         kind: 'error',
@@ -287,10 +294,27 @@ export default function App() {
       })
       return
     }
+    let versions: SteamVersionOption[] = []
+    let notes: string[] = []
+    try {
+      const listed = await window.bannerlord.listSteamVersions()
+      versions = listed.options
+      notes = listed.notes
+      setSteamVersions(versions)
+      setSteamVersionNotes(notes)
+    } catch (err) {
+      setMessage({
+        kind: 'warn',
+        text: `Could not list Steam versions: ${err instanceof Error ? err.message : String(err)}`,
+      })
+    }
+    const current = versions.find((v) => v.source === 'current')
     setNameModal({
       mode: 'create',
       value: defaultNewProfileName(),
       captureCurrent: true,
+      gameVersion: current?.gameVersion || discovery?.detectedGameVersion || '',
+      steamBetaBranch: current?.steamBetaBranch || discovery?.steamBetaBranch || '',
     })
   }
 
@@ -298,20 +322,29 @@ export default function App() {
     if (!nameModal) return
     const name = nameModal.value.trim() || defaultNewProfileName()
     if (nameModal.mode === 'create') {
+      const captureCurrent = nameModal.captureCurrent
+      const gameVersion = nameModal.gameVersion
+      const steamBetaBranch = nameModal.steamBetaBranch
+      if (!captureCurrent && !String(gameVersion).trim()) {
+        setMessage({ kind: 'warn', text: 'Pick a Bannerlord / Steam version for the new profile.' })
+        return
+      }
       setNameModal(null)
       await withBusy(async () => {
         const profile = await window.bannerlord.createProfile({
           name,
-          captureCurrent: nameModal.captureCurrent,
+          captureCurrent,
+          gameVersion: captureCurrent ? undefined : gameVersion.trim() || 'unknown',
+          steamBetaBranch: captureCurrent ? undefined : steamBetaBranch,
         })
         await refresh()
         setSelectedId(profile.id)
         setBootError(null)
         setMessage({
           kind: 'ok',
-          text: nameModal.captureCurrent
+          text: captureCurrent
             ? `Created "${profile.name}" from current LauncherData / Modules (${profile.mods.length} mods).`
-            : `Created empty profile "${profile.name}".`,
+            : `Created "${profile.name}" targeting ${profile.gameVersion}${profile.steamBetaBranch ? ` / ${profile.steamBetaBranch}` : ' (public)'} (empty mod list).`,
         })
       })
       return
@@ -333,12 +366,45 @@ export default function App() {
   }
 
   function onCreate() {
-    openCreateModal()
+    void openCreateModal()
   }
 
   function onRename() {
     if (!selected) return
-    setNameModal({ mode: 'rename', value: selected.name, captureCurrent: false })
+    setNameModal({
+      mode: 'rename',
+      value: selected.name,
+      captureCurrent: false,
+      gameVersion: selected.gameVersion,
+      steamBetaBranch: selected.steamBetaBranch,
+    })
+  }
+
+  async function onScanLoadOrder() {
+    if (!selected) return
+    await withBusy(async () => {
+      const scan = await window.bannerlord.scanLoadOrder(selected.id)
+      await window.bannerlord.reorderMods(selected.id, scan.orderedIds, { saveUndo: true })
+      await refresh()
+      setMessage({
+        kind: scan.warnings.length ? 'warn' : 'ok',
+        text: [
+          'Applied dependency load order.',
+          ...scan.notes,
+          ...scan.warnings,
+          'Use “Undo load order” to restore the previous order.',
+        ].join('\n'),
+      })
+    })
+  }
+
+  async function onUndoLoadOrder() {
+    if (!selected) return
+    await withBusy(async () => {
+      await window.bannerlord.undoLoadOrder(selected.id)
+      await refresh()
+      setMessage({ kind: 'ok', text: 'Restored previous load order.' })
+    })
   }
 
   function onDelete() {
@@ -352,12 +418,7 @@ export default function App() {
 
   function onRefreshFromDisk() {
     if (!selected) {
-      // No profile selected — create one from current Modules instead.
-      setNameModal({
-        mode: 'create',
-        value: defaultNewProfileName(),
-        captureCurrent: true,
-      })
+      void openCreateModal()
       setMessage({
         kind: 'warn',
         text: 'No profile selected — create one from current Modules/LauncherData.',
@@ -573,7 +634,7 @@ export default function App() {
             <h2>{nameModal.mode === 'create' ? 'New Profile' : 'Rename profile'}</h2>
             <p className="sub">
               {nameModal.mode === 'create'
-                ? 'Name this loadout. By default it captures your current Modules + LauncherData.'
+                ? 'Name this loadout. Capture uses the current install version; uncheck Capture to pick a Steam Bannerlord version.'
                 : 'Choose a new name for this profile.'}
             </p>
             <div className="field" style={{ margin: '0.75rem 0' }}>
@@ -591,16 +652,52 @@ export default function App() {
               />
             </div>
             {nameModal.mode === 'create' && (
-              <label className="check-row" style={{ paddingTop: 0, marginBottom: '0.9rem' }}>
-                <input
-                  type="checkbox"
-                  checked={nameModal.captureCurrent}
-                  onChange={(e) =>
-                    setNameModal({ ...nameModal, captureCurrent: e.target.checked })
-                  }
-                />
-                Capture current Modules / LauncherData
-              </label>
+              <>
+                <label className="check-row" style={{ paddingTop: 0, marginBottom: '0.9rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={nameModal.captureCurrent}
+                    onChange={(e) =>
+                      setNameModal({ ...nameModal, captureCurrent: e.target.checked })
+                    }
+                  />
+                  Capture current Modules / LauncherData
+                </label>
+                {!nameModal.captureCurrent && (
+                  <div className="field" style={{ marginBottom: '0.9rem' }}>
+                    <label htmlFor="steamVersionPick">Bannerlord / Steam version</label>
+                    <select
+                      id="steamVersionPick"
+                      value={`${nameModal.steamBetaBranch}||${nameModal.gameVersion}`}
+                      onChange={(e) => {
+                        const [branch, ...rest] = e.target.value.split('||')
+                        const version = rest.join('||')
+                        setNameModal({
+                          ...nameModal,
+                          steamBetaBranch: branch,
+                          gameVersion: version,
+                        })
+                      }}
+                    >
+                      {steamVersions.length === 0 && (
+                        <option value="||public">Steam public (default)</option>
+                      )}
+                      {steamVersions.map((opt) => (
+                        <option
+                          key={`${opt.source}-${opt.steamBetaBranch}-${opt.gameVersion}-${opt.label}`}
+                          value={`${opt.steamBetaBranch}||${opt.gameVersion}`}
+                        >
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="sub" style={{ marginTop: '0.45rem' }}>
+                      Used when capture is off. Persists as gameVersion / steamBetaBranch.
+                      {steamVersionNotes[0] ? ` ${steamVersionNotes[0]}` : ''}
+                    </p>
+                  </div>
+                )}
+              </>
             )}
             <div className="toolbar-group">
               <button className="btn primary" disabled={busy} onClick={() => void submitNameModal()}>
@@ -641,11 +738,16 @@ export default function App() {
       <>
         <div className="boot-shell">
           <div className="brand">
-            <h1>Bannerlord Mod Profiles</h1>
-            <p>Starting…</p>
+            <div className="brand-row">
+              <img className="brand-logo" src={logoUrl} alt="" />
+              <div>
+                <h1>Modunary</h1>
+                <p>Starting…</p>
+              </div>
+            </div>
           </div>
-          <div className="empty">Loading Bannerlord Mod Profiles…</div>
-          <button className="btn primary" disabled={busy} onClick={openCreateModal}>
+          <div className="empty">Loading Modunary…</div>
+          <button className="btn primary" disabled={busy} onClick={() => void openCreateModal()}>
             New Profile
           </button>
           <button
@@ -674,12 +776,17 @@ export default function App() {
       <>
         <div className="boot-shell">
           <div className="brand">
-            <h1>Bannerlord Mod Profiles</h1>
-            <p>Could not finish startup</p>
+            <div className="brand-row">
+              <img className="brand-logo" src={logoUrl} alt="" />
+              <div>
+                <h1>Modunary</h1>
+                <p>Could not finish startup</p>
+              </div>
+            </div>
           </div>
           {bootError && <div className="callout error">{bootError}</div>}
           <div className="toolbar-group">
-            <button className="btn primary" onClick={openCreateModal}>
+            <button className="btn primary" onClick={() => void openCreateModal()}>
               New Profile
             </button>
             <button
@@ -714,8 +821,13 @@ export default function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <h1>Bannerlord Mod Profiles</h1>
-          <p>Vaulted loadouts · version switch · Steam / Nexus / ModDB</p>
+          <div className="brand-row">
+            <img className="brand-logo" src={logoUrl} alt="" />
+            <div>
+              <h1>Modunary</h1>
+              <p>Bannerlord mod profiles · Steam / Nexus / ModDB</p>
+            </div>
+          </div>
         </div>
 
         {bootError && <div className="callout error">{bootError}</div>}
@@ -762,7 +874,13 @@ export default function App() {
                 onClick={() => setSelectedId(p.id)}
                 onDoubleClick={() => {
                   setSelectedId(p.id)
-                  setNameModal({ mode: 'rename', value: p.name, captureCurrent: false })
+                  setNameModal({
+                    mode: 'rename',
+                    value: p.name,
+                    captureCurrent: false,
+                    gameVersion: p.gameVersion,
+                    steamBetaBranch: p.steamBetaBranch,
+                  })
                 }}
               >
                 <span className="name">{p.name}</span>
@@ -863,6 +981,29 @@ export default function App() {
                   default), parks other community mods, then writes LauncherData.xml. Vortex is
                   ignored.
                 </p>
+                <div className="toolbar-group" style={{ marginBottom: '0.75rem' }}>
+                  <button
+                    className="btn primary"
+                    disabled={busy || selected.mods.length === 0}
+                    onClick={() => void onScanLoadOrder()}
+                    title="Scan SubModule.xml dependencies and apply a topological load order"
+                  >
+                    Scan &amp; apply load order
+                  </button>
+                  <button
+                    className="btn"
+                    disabled={busy || !selected.loadOrderUndo?.length}
+                    onClick={() => void onUndoLoadOrder()}
+                    title="Restore the order from before the last scan/apply"
+                  >
+                    Undo load order
+                  </button>
+                </div>
+                {selected.loadOrderUndo?.length ? (
+                  <div className="callout" style={{ marginBottom: '0.75rem' }}>
+                    Undo available — previous order saved ({selected.loadOrderUndo.length} mods).
+                  </div>
+                ) : null}
                 <div className="field" style={{ marginBottom: '0.75rem' }}>
                   <label htmlFor="filter">Filter</label>
                   <input
@@ -1338,14 +1479,16 @@ export default function App() {
 
             {tab === 'about' && (
               <section className="panel">
-                <h2>How profiles work (this pass)</h2>
+                <h2>How Modunary works</h2>
                 <div className="callout">
-                  {`1. Each profile stores version/BetaKey, BLSE requirement, vaulted mod set, order, enabled flags.
-2. Activate parks non-profile community modules into the vault, deploys the profile set (junction/copy), writes LauncherData.xml.
-3. If the target game version differs, a modal asks to Continue (opt-in BetaKey write + validate) or Cancel (no changes).
-4. Launch uses BLSE when the profile requires it; otherwise Steam.
-5. Stores: Nexus (API key; Premium for CDN), Steam Workshop (Web API key + subscribe/import), ModDB (no official API — browser + ZIP import).
-6. Vortex is ignored entirely.`}
+                  {`1. Each profile stores gameVersion / steamBetaBranch, BLSE requirement, vaulted mod set, order, enabled flags.
+2. New Profile with capture on infers version from the install; with capture off you pick a Steam version (current, public, backups, steamcmd, known branches).
+3. Activate parks non-profile community modules into the vault, deploys the profile set (junction/copy), writes LauncherData.xml.
+4. If the target game version differs, a modal asks to Continue (opt-in BetaKey write + validate) or Cancel (no changes).
+5. Mods tab → Scan & apply load order reads SubModule.xml DependedModules / Metadatas and applies a topo order (Undo restores the previous order).
+6. Launch uses BLSE when the profile requires it; otherwise Steam.
+7. Stores: Nexus (API key; Premium for CDN), Steam Workshop (Web API key + subscribe/import), ModDB (no official API — browser + ZIP import).
+8. Vortex is ignored entirely.`}
                 </div>
               </section>
             )}
