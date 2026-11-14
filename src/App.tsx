@@ -657,42 +657,107 @@ export default function App() {
                   <input
                     type="checkbox"
                     checked={nameModal.captureCurrent}
-                    onChange={(e) =>
-                      setNameModal({ ...nameModal, captureCurrent: e.target.checked })
-                    }
+                    onChange={(e) => {
+                      const captureCurrent = e.target.checked
+                      if (captureCurrent) {
+                        setNameModal({ ...nameModal, captureCurrent })
+                        return
+                      }
+                      const match =
+                        steamVersions.find(
+                          (v) =>
+                            v.steamBetaBranch === nameModal.steamBetaBranch &&
+                            v.gameVersion === nameModal.gameVersion,
+                        ) || steamVersions[0]
+                      setNameModal({
+                        ...nameModal,
+                        captureCurrent,
+                        gameVersion: match?.gameVersion || nameModal.gameVersion || '1.5.7',
+                        steamBetaBranch: match?.steamBetaBranch ?? nameModal.steamBetaBranch,
+                      })
+                    }}
                   />
                   Capture current Modules / LauncherData
                 </label>
                 {!nameModal.captureCurrent && (
-                  <div className="field" style={{ marginBottom: '0.9rem' }}>
-                    <label htmlFor="steamVersionPick">Bannerlord / Steam version</label>
-                    <select
-                      id="steamVersionPick"
-                      value={`${nameModal.steamBetaBranch}||${nameModal.gameVersion}`}
-                      onChange={(e) => {
-                        const [branch, ...rest] = e.target.value.split('||')
-                        const version = rest.join('||')
-                        setNameModal({
-                          ...nameModal,
-                          steamBetaBranch: branch,
-                          gameVersion: version,
-                        })
-                      }}
+                  <div className="field version-picker-field" style={{ marginBottom: '0.9rem' }}>
+                    <label id="steamVersionPickLabel">Bannerlord / Steam version</label>
+                    <div
+                      className="version-picker"
+                      role="radiogroup"
+                      aria-labelledby="steamVersionPickLabel"
                     >
                       {steamVersions.length === 0 && (
-                        <option value="||public">Steam public (default)</option>
+                        <label className="version-option">
+                          <input
+                            type="radio"
+                            name="steamVersionPick"
+                            checked={
+                              nameModal.steamBetaBranch === '' &&
+                              (nameModal.gameVersion === 'public' || !nameModal.gameVersion)
+                            }
+                            onChange={() =>
+                              setNameModal({
+                                ...nameModal,
+                                steamBetaBranch: '',
+                                gameVersion: 'public',
+                              })
+                            }
+                          />
+                          <span className="version-option-text">
+                            <span className="version-option-label">public (Public)</span>
+                            <span className="version-option-sub">Steam live branch</span>
+                          </span>
+                        </label>
                       )}
-                      {steamVersions.map((opt) => (
-                        <option
-                          key={`${opt.source}-${opt.steamBetaBranch}-${opt.gameVersion}-${opt.label}`}
-                          value={`${opt.steamBetaBranch}||${opt.gameVersion}`}
-                        >
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
+                      {steamVersions.map((opt) => {
+                        const selected =
+                          nameModal.steamBetaBranch === opt.steamBetaBranch &&
+                          nameModal.gameVersion === opt.gameVersion
+                        const dateLabel = opt.releasedAt
+                          ? new Date(
+                              opt.releasedAt.includes('T')
+                                ? opt.releasedAt
+                                : `${opt.releasedAt}T12:00:00Z`,
+                            ).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                              timeZone: 'UTC',
+                            })
+                          : null
+                        return (
+                          <label
+                            key={`${opt.source}-${opt.steamBetaBranch}-${opt.gameVersion}-${opt.label}`}
+                            className={`version-option ${selected ? 'selected' : ''}`}
+                          >
+                            <input
+                              type="radio"
+                              name="steamVersionPick"
+                              checked={selected}
+                              onChange={() =>
+                                setNameModal({
+                                  ...nameModal,
+                                  steamBetaBranch: opt.steamBetaBranch,
+                                  gameVersion: opt.gameVersion,
+                                })
+                              }
+                            />
+                            <span className="version-option-text">
+                              <span className="version-option-label">{opt.label}</span>
+                              <span className="version-option-sub">
+                                {opt.secondaryLabel || opt.note || opt.source}
+                              </span>
+                            </span>
+                            {dateLabel ? (
+                              <span className="version-option-date">{dateLabel}</span>
+                            ) : null}
+                          </label>
+                        )
+                      })}
+                    </div>
                     <p className="sub" style={{ marginTop: '0.45rem' }}>
-                      Used when capture is off. Persists as gameVersion / steamBetaBranch.
+                      Newest first. Persists as gameVersion / steamBetaBranch.
                       {steamVersionNotes[0] ? ` ${steamVersionNotes[0]}` : ''}
                     </p>
                   </div>

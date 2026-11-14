@@ -447,12 +447,83 @@ button {
 }
 
 .modal {
-  width: min(520px, 100%);
+  width: min(560px, 100%);
+  max-height: min(92vh, 820px);
+  overflow: auto;
   background: linear-gradient(180deg, #241c14, #17120e);
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   box-shadow: var(--shadow);
   padding: 1.1rem 1.2rem 1.2rem;
+}
+
+.version-picker-field {
+  min-width: 0;
+}
+
+.version-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: min(48vh, 420px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  padding: 0.25rem;
+}
+
+.version-option {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.55rem;
+  align-items: start;
+  padding: 0.55rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.version-option:hover {
+  background: var(--bg-hover);
+}
+
+.version-option.selected {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.version-option input {
+  margin-top: 0.2rem;
+  accent-color: var(--accent-strong);
+}
+
+.version-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.version-option-label {
+  font-weight: 650;
+  color: var(--text);
+  line-height: 1.25;
+}
+
+.version-option-sub {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.version-option-date {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  padding-top: 0.15rem;
 }
 
 .modal h2 {

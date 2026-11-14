@@ -161,11 +161,16 @@ export interface CreateProfileInput {
 }
 
 export interface SteamVersionOption {
+  /** Primary UI label — always leads with a concrete version, e.g. "1.5.7 (Public)". */
   label: string
   gameVersion: string
   steamBetaBranch: string
   source: 'current' | 'public' | 'manifest-history' | 'profile-history' | 'steamcmd' | 'known'
   note?: string
+  /** ISO timestamp when known (from steamcmd timeupdated or curated dates). */
+  releasedAt?: string
+  /** Secondary line under the primary label in the picker. */
+  secondaryLabel?: string
 }
 
 export interface LoadOrderScanResult {
