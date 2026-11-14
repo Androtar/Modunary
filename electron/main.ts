@@ -98,7 +98,44 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow?.webContents
       .executeJavaScript('Boolean(window.bannerlord)')
-      .then((ok) => console.log('[main] window.bannerlord present=', ok))
+      .then(async (ok) => {
+        console.log('[main] window.bannerlord present=', ok)
+        if (!ok || process.env.BMP_SMOKE_CREATE !== '1') return
+        const js = `
+          (async () => {
+            const ipcName = 'IPC Smoke ' + Date.now();
+            const created = await window.bannerlord.createProfile({
+              name: ipcName,
+              captureCurrent: true,
+            });
+            const btn = document.querySelector('.create-btn');
+            if (!btn) return { ipc: created.name, ui: 'NO_CREATE_BTN' };
+            btn.click();
+            await new Promise(r => setTimeout(r, 400));
+            const input = document.querySelector('#profileNameBoot');
+            if (!input) return { ipc: created.name, ui: 'NO_MODAL_INPUT' };
+            const createBtn = [...document.querySelectorAll('.modal .btn.primary')]
+              .find(b => /create/i.test(b.textContent || ''));
+            if (!createBtn) return { ipc: created.name, ui: 'NO_CREATE_CONFIRM' };
+            // Confirm with default name from modal state
+            createBtn.click();
+            await new Promise(r => setTimeout(r, 2500));
+            const store = await window.bannerlord.getStore();
+            return {
+              ipc: created.name,
+              ui: 'MODAL_OK',
+              profileCount: store.profiles.length,
+              names: store.profiles.map(p => p.name),
+            };
+          })()
+        `
+        try {
+          const result = await mainWindow?.webContents.executeJavaScript(js)
+          console.log('[main] BMP_SMOKE_CREATE result=', JSON.stringify(result))
+        } catch (err) {
+          console.error('[main] BMP_SMOKE_CREATE failed', err)
+        }
+      })
       .catch((err) => console.error('[main] bannerlord probe failed', err))
   })
 

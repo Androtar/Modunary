@@ -59,6 +59,18 @@ export default function App() {
   const [storeError, setStoreError] = useState<string | null>(null)
   const [storeManualUrl, setStoreManualUrl] = useState<string | null>(null)
 
+  // Electron does not support window.prompt / window.confirm — use in-app modals.
+  const [nameModal, setNameModal] = useState<{
+    mode: 'create' | 'rename'
+    value: string
+    captureCurrent: boolean
+  } | null>(null)
+  const [confirmModal, setConfirmModal] = useState<{
+    mode: 'delete' | 'capture'
+    title: string
+    body: string
+  } | null>(null)
+
   const refresh = useCallback(async () => {
     if (!window.bannerlord) {
       throw new Error(
@@ -262,7 +274,12 @@ export default function App() {
     })
   }
 
-  async function onCreate() {
+  function defaultNewProfileName(): string {
+    const n = (store?.profiles.length ?? 0) + 1
+    return `Profile ${n}`
+  }
+
+  function openCreateModal() {
     if (!window.bannerlord) {
       setMessage({
         kind: 'error',
@@ -270,57 +287,115 @@ export default function App() {
       })
       return
     }
-    const name = window.prompt('New profile name')
-    if (!name?.trim()) return
-    await withBusy(async () => {
-      const profile = await window.bannerlord.createProfile({
-        name: name.trim(),
-        captureCurrent: true,
+    setNameModal({
+      mode: 'create',
+      value: defaultNewProfileName(),
+      captureCurrent: true,
+    })
+  }
+
+  async function submitNameModal() {
+    if (!nameModal) return
+    const name = nameModal.value.trim() || defaultNewProfileName()
+    if (nameModal.mode === 'create') {
+      setNameModal(null)
+      await withBusy(async () => {
+        const profile = await window.bannerlord.createProfile({
+          name,
+          captureCurrent: nameModal.captureCurrent,
+        })
+        await refresh()
+        setSelectedId(profile.id)
+        setBootError(null)
+        setMessage({
+          kind: 'ok',
+          text: nameModal.captureCurrent
+            ? `Created "${profile.name}" from current LauncherData / Modules (${profile.mods.length} mods).`
+            : `Created empty profile "${profile.name}".`,
+        })
       })
-      await refresh()
-      setSelectedId(profile.id)
-      setBootError(null)
-      setMessage({
-        kind: 'ok',
-        text: `Created "${profile.name}" from current LauncherData / Modules (${profile.mods.length} mods).`,
-      })
-    })
-  }
-
-  async function onRename() {
-    if (!selected) return
-    const name = window.prompt('Rename profile', selected.name)
-    if (!name?.trim() || name.trim() === selected.name) return
-    await withBusy(async () => {
-      await window.bannerlord.renameProfile(selected.id, name.trim())
-      await refresh()
-    })
-  }
-
-  async function onDelete() {
-    if (!selected) return
-    if (!window.confirm(`Delete profile "${selected.name}"? This cannot be undone.`)) return
-    await withBusy(async () => {
-      await window.bannerlord.deleteProfile(selected.id)
-      await refresh()
-      setMessage({ kind: 'ok', text: `Deleted "${selected.name}".` })
-    })
-  }
-
-  async function onRefreshFromDisk() {
-    if (!selected) return
-    if (
-      !window.confirm(
-        `Replace "${selected.name}" mods/order/enabled with the current LauncherData + Modules snapshot?`,
-      )
-    ) {
       return
     }
+    if (!selected) {
+      setNameModal(null)
+      return
+    }
+    if (name === selected.name) {
+      setNameModal(null)
+      return
+    }
+    setNameModal(null)
     await withBusy(async () => {
-      await window.bannerlord.refreshProfileFromDisk(selected.id)
+      await window.bannerlord.renameProfile(selected.id, name)
       await refresh()
-      setMessage({ kind: 'ok', text: 'Pulled current LauncherData + Modules into this profile.' })
+      setMessage({ kind: 'ok', text: `Renamed to "${name}".` })
     })
+  }
+
+  function onCreate() {
+    openCreateModal()
+  }
+
+  function onRename() {
+    if (!selected) return
+    setNameModal({ mode: 'rename', value: selected.name, captureCurrent: false })
+  }
+
+  function onDelete() {
+    if (!selected) return
+    setConfirmModal({
+      mode: 'delete',
+      title: 'Delete profile',
+      body: `Delete profile "${selected.name}"? This cannot be undone.`,
+    })
+  }
+
+  function onRefreshFromDisk() {
+    if (!selected) {
+      // No profile selected — create one from current Modules instead.
+      setNameModal({
+        mode: 'create',
+        value: defaultNewProfileName(),
+        captureCurrent: true,
+      })
+      setMessage({
+        kind: 'warn',
+        text: 'No profile selected — create one from current Modules/LauncherData.',
+      })
+      return
+    }
+    setConfirmModal({
+      mode: 'capture',
+      title: 'Capture current Modules',
+      body: `Replace "${selected.name}" mods/order/enabled with the current LauncherData + Modules snapshot?`,
+    })
+  }
+
+  async function submitConfirmModal() {
+    if (!confirmModal) return
+    const mode = confirmModal.mode
+    setConfirmModal(null)
+    if (mode === 'delete') {
+      if (!selected) return
+      const deletedName = selected.name
+      await withBusy(async () => {
+        await window.bannerlord.deleteProfile(selected.id)
+        await refresh()
+        setMessage({ kind: 'ok', text: `Deleted "${deletedName}".` })
+      })
+      return
+    }
+    if (mode === 'capture') {
+      if (!selected) return
+      await withBusy(async () => {
+        await window.bannerlord.refreshProfileFromDisk(selected.id)
+        await refresh()
+        setMessage({
+          kind: 'ok',
+          text: 'Pulled current LauncherData + Modules into this profile.',
+        })
+      })
+    }
   }
 
   async function onSyncMods() {
@@ -482,51 +557,95 @@ export default function App() {
   useEffect(() => {
     if (!window.bannerlord?.onUiCommand) return
     return window.bannerlord.onUiCommand((command) => {
-      if (command === 'newProfile') void onCreate()
-      if (command === 'captureCurrent') void onRefreshFromDisk()
+      if (command === 'newProfile') openCreateModal()
+      if (command === 'captureCurrent') onRefreshFromDisk()
     })
     // Rebind when selection changes so Capture uses the selected profile.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId])
+  }, [selectedId, store?.profiles.length])
+
+  const nameAndConfirmModals = (
+    <>
+      {nameModal && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h2>{nameModal.mode === 'create' ? 'New Profile' : 'Rename profile'}</h2>
+            <p className="sub">
+              {nameModal.mode === 'create'
+                ? 'Name this loadout. By default it captures your current Modules + LauncherData.'
+                : 'Choose a new name for this profile.'}
+            </p>
+            <div className="field" style={{ margin: '0.75rem 0' }}>
+              <label htmlFor="profileNameBoot">Profile name</label>
+              <input
+                id="profileNameBoot"
+                autoFocus
+                value={nameModal.value}
+                onChange={(e) => setNameModal({ ...nameModal, value: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void submitNameModal()
+                  if (e.key === 'Escape') setNameModal(null)
+                }}
+                placeholder="Profile name"
+              />
+            </div>
+            {nameModal.mode === 'create' && (
+              <label className="check-row" style={{ paddingTop: 0, marginBottom: '0.9rem' }}>
+                <input
+                  type="checkbox"
+                  checked={nameModal.captureCurrent}
+                  onChange={(e) =>
+                    setNameModal({ ...nameModal, captureCurrent: e.target.checked })
+                  }
+                />
+                Capture current Modules / LauncherData
+              </label>
+            )}
+            <div className="toolbar-group">
+              <button className="btn primary" disabled={busy} onClick={() => void submitNameModal()}>
+                {nameModal.mode === 'create' ? 'Create' : 'Rename'}
+              </button>
+              <button className="btn" disabled={busy} onClick={() => setNameModal(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmModal && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h2>{confirmModal.title}</h2>
+            <p>{confirmModal.body}</p>
+            <div className="toolbar-group" style={{ marginTop: '0.9rem' }}>
+              <button
+                className={`btn ${confirmModal.mode === 'delete' ? 'danger' : 'primary'}`}
+                disabled={busy}
+                onClick={() => void submitConfirmModal()}
+              >
+                {confirmModal.mode === 'delete' ? 'Delete' : 'Capture'}
+              </button>
+              <button className="btn" disabled={busy} onClick={() => setConfirmModal(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
 
   if (booting && !store) {
     return (
-      <div className="boot-shell">
-        <div className="brand">
-          <h1>Bannerlord Mod Profiles</h1>
-          <p>Starting…</p>
-        </div>
-        <div className="empty">Loading Bannerlord Mod Profiles…</div>
-        <button
-          className="btn primary"
-          onClick={() => {
-            setBooting(true)
-            setBootError(null)
-            void refresh()
-              .catch((err: unknown) => {
-                setBootError(err instanceof Error ? err.message : String(err))
-                setStore((prev) => prev ?? { ...EMPTY_STORE })
-              })
-              .finally(() => setBooting(false))
-          }}
-        >
-          Retry
-        </button>
-      </div>
-    )
-  }
-
-  if (!store) {
-    return (
-      <div className="boot-shell">
-        <div className="brand">
-          <h1>Bannerlord Mod Profiles</h1>
-          <p>Could not finish startup</p>
-        </div>
-        {bootError && <div className="callout error">{bootError}</div>}
-        <div className="toolbar-group">
-          <button className="btn primary" onClick={onCreate}>
-            New profile
+      <>
+        <div className="boot-shell">
+          <div className="brand">
+            <h1>Bannerlord Mod Profiles</h1>
+            <p>Starting…</p>
+          </div>
+          <div className="empty">Loading Bannerlord Mod Profiles…</div>
+          <button className="btn primary" disabled={busy} onClick={openCreateModal}>
+            New Profile
           </button>
           <button
             className="btn"
@@ -541,10 +660,46 @@ export default function App() {
                 .finally(() => setBooting(false))
             }}
           >
-            Retry load
+            Retry
           </button>
         </div>
-      </div>
+        {nameAndConfirmModals}
+      </>
+    )
+  }
+
+  if (!store) {
+    return (
+      <>
+        <div className="boot-shell">
+          <div className="brand">
+            <h1>Bannerlord Mod Profiles</h1>
+            <p>Could not finish startup</p>
+          </div>
+          {bootError && <div className="callout error">{bootError}</div>}
+          <div className="toolbar-group">
+            <button className="btn primary" onClick={openCreateModal}>
+              New Profile
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                setBooting(true)
+                setBootError(null)
+                void refresh()
+                  .catch((err: unknown) => {
+                    setBootError(err instanceof Error ? err.message : String(err))
+                    setStore((prev) => prev ?? { ...EMPTY_STORE })
+                  })
+                  .finally(() => setBooting(false))
+              }}
+            >
+              Retry load
+            </button>
+          </div>
+        </div>
+        {nameAndConfirmModals}
+      </>
     )
   }
 
@@ -1221,6 +1376,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {nameAndConfirmModals}
     </div>
   )
 }
