@@ -213,6 +213,11 @@ export interface AppStore {
    * Default false: window stays hidden so closing it cannot break the run.
    */
   showNexusBrowserDuringCollection: boolean
+  /**
+   * Folder for Collection Slow/Standard downloads + watcher.
+   * null/empty = user Downloads (`~/Downloads`).
+   */
+  collectionDownloadsPath: string | null
 }
 
 export interface ActivateOptions {
@@ -337,4 +342,5 @@ export const EMPTY_STORE: AppStore = {
   lastActivationNotes: [],
   allowSteamBetaKeyWrite: true,
   showNexusBrowserDuringCollection: false,
+  collectionDownloadsPath: null,
 }

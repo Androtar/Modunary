@@ -1,9 +1,23 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { getStoreSnapshot } from './profiles'
+
+/** OS default Downloads folder (used when setting is empty). */
+export function getDefaultDownloadsPath(): string {
+  return path.join(os.homedir(), 'Downloads')
+}
 
 function downloadsDir(): string {
-  return path.join(os.homedir(), 'Downloads')
+  try {
+    const configured = getStoreSnapshot().collectionDownloadsPath
+    if (typeof configured === 'string' && configured.trim()) {
+      return path.normalize(configured.trim())
+    }
+  } catch {
+    // store may be unavailable during very early boot
+  }
+  return getDefaultDownloadsPath()
 }
 
 function isZipLike(name: string): boolean {
@@ -222,7 +236,13 @@ export async function waitForNewDownload(options: {
 }
 
 export function getDownloadsPath(): string {
-  return downloadsDir()
+  const dir = downloadsDir()
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+  } catch {
+    // ignore — caller may still watch / fail clearly
+  }
+  return dir
 }
 
 function formatBytes(n: number): string {

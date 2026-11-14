@@ -62,6 +62,10 @@ export function loadStore(): AppStore {
       profiles,
       allowSteamBetaKeyWrite: raw.allowSteamBetaKeyWrite !== false,
       showNexusBrowserDuringCollection: raw.showNexusBrowserDuringCollection === true,
+      collectionDownloadsPath:
+        typeof raw.collectionDownloadsPath === 'string' && raw.collectionDownloadsPath.trim()
+          ? raw.collectionDownloadsPath.trim()
+          : null,
     }
   } catch {
     const bak = `${storePath}.corrupt-${Date.now()}.json`
@@ -417,6 +421,14 @@ export function setAllowSteamBetaKeyWrite(allow: boolean): AppStore {
 export function setShowNexusBrowserDuringCollection(show: boolean): AppStore {
   const store = loadStore()
   store.showNexusBrowserDuringCollection = Boolean(show)
+  saveStore(store)
+  return store
+}
+
+export function setCollectionDownloadsPath(dir: string | null): AppStore {
+  const store = loadStore()
+  const trimmed = typeof dir === 'string' ? dir.trim() : ''
+  store.collectionDownloadsPath = trimmed ? trimmed : null
   saveStore(store)
   return store
 }

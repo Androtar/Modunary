@@ -43,8 +43,8 @@ function isVortexOrNxmUrl(url: string): boolean {
   )
 }
 
-/** Persist cookies + force BrowserWindow downloads into the real Downloads folder. */
-export function ensureNexusSessionConfigured(): void {
+/** Apply current Collection download folder to the Nexus session download path. */
+export function applyNexusDownloadPath(): string {
   const ses = getNexusSession()
   const downloads = getDownloadsPath()
   fs.mkdirSync(downloads, { recursive: true })
@@ -53,6 +53,13 @@ export function ensureNexusSessionConfigured(): void {
   } catch {
     // older Electron — will-download still sets path
   }
+  return downloads
+}
+
+/** Persist cookies + force BrowserWindow downloads into the Collection download folder. */
+export function ensureNexusSessionConfigured(): void {
+  const ses = getNexusSession()
+  applyNexusDownloadPath()
 
   if (downloadHooked) return
   downloadHooked = true
@@ -67,6 +74,7 @@ export function ensureNexusSessionConfigured(): void {
   })
 
   ses.on('will-download', (_event, item) => {
+    const downloads = applyNexusDownloadPath()
     const name = item.getFilename() || `nexus-download-${Date.now()}.zip`
     const savePath = path.join(downloads, name)
     item.setSavePath(savePath)

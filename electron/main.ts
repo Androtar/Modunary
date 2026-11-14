@@ -34,6 +34,7 @@ import {
   setActiveProfile,
   setAllowSteamBetaKeyWrite,
   setShowNexusBrowserDuringCollection,
+  setCollectionDownloadsPath,
   setModEnabled,
   setPaths,
   setProfileDirty,
@@ -62,7 +63,8 @@ import {
   startCollectionInstall,
   subscribeCollectionInstall,
 } from './services/collectionInstall'
-import { ensureNexusSessionConfigured } from './services/nexusBrowser'
+import { getDefaultDownloadsPath } from './services/downloadWatch'
+import { applyNexusDownloadPath, ensureNexusSessionConfigured } from './services/nexusBrowser'
 import {
   getWorkshopPathInfo,
   openSteamWorkshopItem,
@@ -479,6 +481,18 @@ function registerIpc() {
       applyNexusBrowserVisibility()
       return next
     }),
+  )
+  ipcMain.handle(
+    'settings:setCollectionDownloadsPath',
+    wrapIpc('settings:setCollectionDownloadsPath', (_e, dir: string | null) => {
+      const next = setCollectionDownloadsPath(dir)
+      applyNexusDownloadPath()
+      return next
+    }),
+  )
+  ipcMain.handle(
+    'settings:getDefaultDownloadsPath',
+    wrapIpc('settings:getDefaultDownloadsPath', () => getDefaultDownloadsPath()),
   )
   ipcMain.handle(
     'discovery:get',

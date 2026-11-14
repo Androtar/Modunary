@@ -82,6 +82,7 @@ export default function App() {
   const [collectionProgress, setCollectionProgress] = useState<CollectionInstallProgress | null>(
     null,
   )
+  const [defaultDownloadsPath, setDefaultDownloadsPath] = useState<string | null>(null)
 
   // Electron does not support window.prompt / window.confirm — use in-app modals.
   const [nameModal, setNameModal] = useState<{
@@ -118,6 +119,7 @@ export default function App() {
       withTimeout(window.bannerlord.getDiscovery(), 30000, 'getDiscovery'),
       withTimeout(window.bannerlord.getSecretsStatus(), 10000, 'getSecretsStatus'),
       withTimeout(window.bannerlord.listVault(), 10000, 'listVault'),
+      withTimeout(window.bannerlord.getDefaultDownloadsPath(), 5000, 'getDefaultDownloadsPath'),
     ])
 
     const warnings: string[] = []
@@ -127,6 +129,7 @@ export default function App() {
     else warnings.push(`Secrets: ${secondary[1].reason}`)
     if (secondary[2].status === 'fulfilled') setVaultCount(secondary[2].value.length)
     else warnings.push(`Vault: ${secondary[2].reason}`)
+    if (secondary[3].status === 'fulfilled') setDefaultDownloadsPath(secondary[3].value)
 
     if (warnings.length) {
       setMessage({
@@ -1946,6 +1949,52 @@ export default function App() {
                     />
                     <button className="btn" onClick={pickDocsPath}>
                       Browse
+                    </button>
+                  </div>
+                </div>
+
+                <div className="field" style={{ marginTop: '0.75rem' }}>
+                  <label>Collection download folder</label>
+                  <p className="sub" style={{ marginTop: 0 }}>
+                    Where Nexus Slow/Standard downloads land and where Collection watches for
+                    archives. Default is your user Downloads folder.
+                  </p>
+                  <div className="path-row">
+                    <input
+                      readOnly
+                      value={
+                        store.collectionDownloadsPath?.trim() ||
+                        defaultDownloadsPath ||
+                        '(user Downloads)'
+                      }
+                    />
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => {
+                        void withBusy(async () => {
+                          const dir = await window.bannerlord.pickDirectory(
+                            'Select Collection download folder',
+                          )
+                          if (!dir) return
+                          await window.bannerlord.setCollectionDownloadsPath(dir)
+                          await refresh()
+                        })
+                      }}
+                    >
+                      Browse
+                    </button>
+                    <button
+                      className="btn ghost"
+                      disabled={busy || !store.collectionDownloadsPath}
+                      onClick={() => {
+                        void withBusy(async () => {
+                          await window.bannerlord.setCollectionDownloadsPath(null)
+                          await refresh()
+                        })
+                      }}
+                    >
+                      Default
                     </button>
                   </div>
                 </div>
