@@ -5,7 +5,12 @@ import type {
   NexusCollectionInfoDto,
 } from '../types'
 import { downloadUrlToVault, importZipToVault } from './installMod'
-import { addModulesToProfile, addVaultModulesToProfile, updateProfile } from './profiles'
+import {
+  addModulesToProfile,
+  addVaultModulesToProfile,
+  getStoreSnapshot,
+  updateProfile,
+} from './profiles'
 import { getNexusDownloadLink, listNexusFiles, validateNexusKey } from './stores/nexus'
 import {
   resolveNexusCollection,
@@ -194,10 +199,29 @@ export function clearCollectionInstallProgress(): void {
   })
 }
 
+function wantsBrowserVisible(): boolean {
+  try {
+    return getStoreSnapshot().showNexusBrowserDuringCollection === true
+  } catch {
+    return false
+  }
+}
+
+/** Apply Show-browser preference. Closing the X hides instead of destroying during Collection. */
+export function applyNexusBrowserVisibility(forceShow = false): void {
+  const win = session?.browser
+  if (!win || win.isDestroyed()) return
+  if (forceShow || wantsBrowserVisible()) {
+    if (!win.isVisible()) win.show()
+  } else if (win.isVisible()) {
+    win.hide()
+  }
+}
+
 function closeBrowser(): void {
   if (session?.browser && !session.browser.isDestroyed()) {
     try {
-      session.browser.close()
+      session.browser.destroy()
     } catch {
       // ignore
     }
@@ -207,11 +231,25 @@ function closeBrowser(): void {
 
 function ensureBrowser(parent: BrowserWindow | null): BrowserWindow {
   if (!session) throw new Error('No session')
-  if (session.browser && !session.browser.isDestroyed()) return session.browser
+  if (session.browser && !session.browser.isDestroyed()) {
+    applyNexusBrowserVisibility()
+    return session.browser
+  }
   session.browser = createNexusBrowser(parent || session.parent)
+  // Closing the window must not abort Collection — hide instead of destroy.
+  session.browser.on('close', (e) => {
+    if (!session?.running) return
+    e.preventDefault()
+    try {
+      session.browser?.hide()
+    } catch {
+      // ignore
+    }
+  })
   session.browser.on('closed', () => {
     if (session) session.browser = null
   })
+  applyNexusBrowserVisibility()
   return session.browser
 }
 
@@ -233,7 +271,8 @@ async function ensureLoggedIn(parent: BrowserWindow | null): Promise<boolean> {
   }
 
   const win = ensureBrowser(parent)
-  win.show()
+  // Login always needs a visible window so Stephen can sign in.
+  applyNexusBrowserVisibility(true)
   win.focus()
   await loadUrl(win, nexusLoginUrl())
   await injectNexusGuideBanner(
@@ -354,14 +393,14 @@ async function manualSlowDownloadInstall(
   }
 
   const win = ensureBrowser(parent)
-  win.show()
-  win.focus()
+  applyNexusBrowserVisibility()
+  if (wantsBrowserVisible()) win.focus()
   const sinceMs = Date.now()
   session.skipCurrent = false
   await loadUrl(win, url)
   await injectNexusGuideBanner(
     win,
-    `Modunary: Auto-clicking Manual / Slow Download for ${mod.name}. Only intervene for CAPTCHA/timer. Never Vortex.`,
+    `Modunary: Auto-clicking Manual / Slow / Standard Download for ${mod.name}. Only intervene for CAPTCHA/timer. Never Vortex/Resumable.`,
   )
 
   const needsUser = (status: string) =>
@@ -388,8 +427,9 @@ async function manualSlowDownloadInstall(
       userPromptActive = true
       item.message = `ACTION NEEDED: ${assist.detail}`
       emit({ stage: 'waiting-download', message: item.message })
-      if (assist.status === 'captcha') {
-        // Stay on page; user must solve — keep polling after they do
+      if (assist.status === 'captcha' || assist.status === 'login') {
+        // User must see the window for CAPTCHA / login
+        applyNexusBrowserVisibility(true)
         await new Promise((r) => setTimeout(r, 2000))
         continue
       }
@@ -398,16 +438,16 @@ async function manualSlowDownloadInstall(
         await new Promise((r) => setTimeout(r, 1000))
         continue
       }
-      if (assist.status === 'login') {
-        await new Promise((r) => setTimeout(r, 2000))
-        continue
-      }
     }
 
-    if (assist.status === 'clicked-slow') {
+    if (assist.status === 'clicked-slow' || assist.status === 'clicked-standard') {
       userPromptActive = false
-      item.message = 'Slow Download auto-clicked — waiting for archive in Downloads…'
+      item.message =
+        assist.status === 'clicked-standard'
+          ? 'Standard Download auto-clicked (large file) — waiting for archive in Downloads…'
+          : 'Slow Download auto-clicked — watching for archive / Standard download modal…'
       emit({ stage: 'waiting-download', message: item.message })
+      // Background watch loop keeps assisting (Standard modal after Slow on large files).
       break
     }
     if (assist.status === 'clicked-manual') {
@@ -450,10 +490,16 @@ async function manualSlowDownloadInstall(
           const msg = `ACTION NEEDED: ${assist.detail}`
           item.message = msg
           emit({ stage: 'waiting-download', message: msg })
+          if (assist.status === 'captcha' || assist.status === 'login') {
+            applyNexusBrowserVisibility(true)
+          }
           void injectNexusGuideBanner(session.browser, msg)
-        } else if (assist.status === 'clicked-slow') {
+        } else if (assist.status === 'clicked-slow' || assist.status === 'clicked-standard') {
           userPromptActive = false
-          item.message = 'Slow Download auto-clicked — waiting for archive in Downloads…'
+          item.message =
+            assist.status === 'clicked-standard'
+              ? 'Standard Download auto-clicked (large file) — waiting for archive…'
+              : 'Slow Download auto-clicked — waiting for archive in Downloads…'
           emit({ stage: 'waiting-download', message: item.message })
         } else if (assist.status === 'clicked-manual') {
           item.message = 'Manual Download auto-clicked — continuing…'

@@ -61,6 +61,7 @@ export function loadStore(): AppStore {
       version: 2,
       profiles,
       allowSteamBetaKeyWrite: raw.allowSteamBetaKeyWrite !== false,
+      showNexusBrowserDuringCollection: raw.showNexusBrowserDuringCollection === true,
     }
   } catch {
     const bak = `${storePath}.corrupt-${Date.now()}.json`
@@ -409,6 +410,13 @@ export function setProfileDirty(id: string, dirty: boolean): ModProfile {
 export function setAllowSteamBetaKeyWrite(allow: boolean): AppStore {
   const store = loadStore()
   store.allowSteamBetaKeyWrite = allow
+  saveStore(store)
+  return store
+}
+
+export function setShowNexusBrowserDuringCollection(show: boolean): AppStore {
+  const store = loadStore()
+  store.showNexusBrowserDuringCollection = Boolean(show)
   saveStore(store)
   return store
 }

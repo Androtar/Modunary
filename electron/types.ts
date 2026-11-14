@@ -195,6 +195,11 @@ export interface AppStore {
   lastActivationNotes: string[]
   /** Opt-in: allow rewriting Steam appmanifest BetaKey when user confirms version switch. */
   allowSteamBetaKeyWrite: boolean
+  /**
+   * When true, show the Nexus Collection BrowserWindow during install.
+   * Default false: window stays hidden so closing it cannot break the run.
+   */
+  showNexusBrowserDuringCollection: boolean
 }
 
 export interface ActivateOptions {
@@ -318,4 +323,5 @@ export const EMPTY_STORE: AppStore = {
   lastActivatedAt: null,
   lastActivationNotes: [],
   allowSteamBetaKeyWrite: true,
+  showNexusBrowserDuringCollection: false,
 }

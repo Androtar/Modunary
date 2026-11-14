@@ -1504,6 +1504,25 @@ export default function App() {
                           >
                             Open Downloads
                           </button>
+                          <label
+                            className="check-row"
+                            style={{ margin: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                            title="Unchecked: Nexus browser stays hidden (closing it cannot break the run). Checked: show the browser window."
+                          >
+                            <input
+                              type="checkbox"
+                              checked={store.showNexusBrowserDuringCollection === true}
+                              onChange={(e) => {
+                                void withBusy(async () => {
+                                  await window.bannerlord.setShowNexusBrowserDuringCollection(
+                                    e.target.checked,
+                                  )
+                                  await refresh()
+                                })
+                              }}
+                            />
+                            Show browser
+                          </label>
                           {!collectionProgress.active && (
                             <button
                               className="btn ghost"

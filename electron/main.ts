@@ -33,6 +33,7 @@ import {
   reorderMods,
   setActiveProfile,
   setAllowSteamBetaKeyWrite,
+  setShowNexusBrowserDuringCollection,
   setModEnabled,
   setPaths,
   setProfileDirty,
@@ -51,6 +52,7 @@ import {
 } from './services/stores/nexus'
 import { resolveNexusCollection } from './services/stores/nexusCollection'
 import {
+  applyNexusBrowserVisibility,
   cancelCollectionInstall,
   clearCollectionInstallProgress,
   getCollectionInstallProgress,
@@ -469,6 +471,14 @@ function registerIpc() {
     wrapIpc('settings:setAllowSteamBetaKeyWrite', (_e, allow: boolean) =>
       setAllowSteamBetaKeyWrite(allow),
     ),
+  )
+  ipcMain.handle(
+    'settings:setShowNexusBrowserDuringCollection',
+    wrapIpc('settings:setShowNexusBrowserDuringCollection', (_e, show: boolean) => {
+      const next = setShowNexusBrowserDuringCollection(show)
+      applyNexusBrowserVisibility()
+      return next
+    }),
   )
   ipcMain.handle(
     'discovery:get',

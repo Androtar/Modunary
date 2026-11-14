@@ -139,6 +139,7 @@ export function createNexusBrowser(parent: BrowserWindow | null): BrowserWindow 
     width: 1180,
     height: 860,
     parent: parent || undefined,
+    show: false,
     title: 'Nexus Mods — Modunary Collection install (Slow Download only)',
     backgroundColor: '#1a1410',
     webPreferences: {
@@ -199,6 +200,9 @@ const SLOW_DOWNLOAD_ASSIST_SCRIPT = `(() => {
   };
   const isFastOrPremium = (t) => /fast\\s*download/i.test(t) || /^premium$/i.test(t);
   const isSlowLabel = (t) => /^slow\\s*downloads?\\.?$/i.test((t || '').replace(/\\s+/g, ' ').trim());
+  // Large-file modal — any mod: "Standard download" only (never Resumable download Beta).
+  const isStandardLabel = (t) => /^standard\\s*downloads?\\.?$/i.test((t || '').replace(/\\s+/g, ' ').trim());
+  const isResumableLabel = (t) => /resumable\\s*download/i.test((t || '').replace(/\\s+/g, ' ').trim());
   const visible = (el) => {
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return false;
@@ -228,13 +232,15 @@ const SLOW_DOWNLOAD_ASSIST_SCRIPT = `(() => {
     title: document.title,
     bodyHasSlow: /slow\\s*download/i.test(bodyText),
     bodyHasFast: /fast\\s*download/i.test(bodyText),
+    bodyHasStandard: /standard\\s*download/i.test(bodyText),
+    bodyHasLargeFileModal: /download this large file/i.test(bodyText) || /without losing progress/i.test(bodyText),
   };
 
   if (document.querySelector('iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha')) {
     return { status: 'captcha', detail: 'CAPTCHA present — complete it, then Slow download.', dump };
   }
 
-  // Pierce open shadow roots — Nexus Free/Premium modal lives in shadow DOM.
+  // Pierce open shadow roots — Nexus Free/Premium + large-file modal live in shadow DOM.
   const allElements = [];
   const collect = (root) => {
     if (!root) return;
@@ -250,44 +256,54 @@ const SLOW_DOWNLOAD_ASSIST_SCRIPT = `(() => {
     if (host.shadowRoot) collect(host.shadowRoot);
   }
 
-  const candidates = [];
-  const seen = new Set();
-  for (const el of allElements) {
-    if (seen.has(el)) continue;
-    seen.add(el);
-    if (!visible(el) || isVortexish(el)) continue;
-    const own = ownText(el);
-    const full = textOf(el);
-    const label = isSlowLabel(own) ? own : (isSlowLabel(full) ? full : '');
-    if (!label) continue;
-    if (isFastOrPremium(full)) continue;
-    const r = el.getBoundingClientRect();
-    candidates.push({
-      el,
-      label,
-      exactOwn: isSlowLabel(own) ? 1 : 0,
-      area: Math.max(1, r.width * r.height),
-      tagScore: /^(BUTTON|A|INPUT)$/i.test(el.tagName) || el.getAttribute('role') === 'button' ? 3 : 0,
-    });
-  }
-  candidates.sort((a, b) => (b.exactOwn - a.exactOwn) || (b.tagScore - a.tagScore) || (a.area - b.area));
-
-  if (candidates[0]) {
+  const pickByLabel = (isLabel, status, verb) => {
+    const candidates = [];
+    const seen = new Set();
+    for (const el of allElements) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      if (!visible(el) || isVortexish(el)) continue;
+      const own = ownText(el);
+      const full = textOf(el);
+      if (isResumableLabel(own) || isResumableLabel(full)) continue;
+      if (isFastOrPremium(full)) continue;
+      const label = isLabel(own) ? own : (isLabel(full) ? full : '');
+      if (!label) continue;
+      candidates.push({
+        el,
+        label,
+        exactOwn: isLabel(own) ? 1 : 0,
+        area: Math.max(1, el.getBoundingClientRect().width * el.getBoundingClientRect().height),
+        tagScore: /^(BUTTON|A|INPUT)$/i.test(el.tagName) || el.getAttribute('role') === 'button' ? 3 : 0,
+      });
+    }
+    candidates.sort((a, b) => (b.exactOwn - a.exactOwn) || (b.tagScore - a.tagScore) || (a.area - b.area));
+    if (!candidates[0]) return null;
     const c = candidates[0];
-    const disabled = c.el.disabled || c.el.getAttribute('aria-disabled') === 'true';
+    const host = (c.el.closest && c.el.closest('a,button,[role="button"]')) || c.el;
+    const disabled = host.disabled || host.getAttribute('aria-disabled') === 'true' ||
+      c.el.disabled || c.el.getAttribute('aria-disabled') === 'true';
     if (disabled) {
-      return { status: 'waiting-timer', detail: 'Slow download disabled/timer — waiting.', dump };
+      return { status: 'waiting-timer', detail: verb + ' disabled/timer — waiting.', dump };
     }
     const geom = clickEl(c.el);
     dump.clicked = geom;
     dump.label = c.label;
     return {
-      status: 'clicked-slow',
-      detail: 'Auto-clicked Slow download ("' + c.label + '") via ' + geom.tag + ' @' + Math.round(geom.x) + ',' + Math.round(geom.y),
+      status,
+      detail: 'Auto-clicked ' + verb + ' ("' + c.label + '") via ' + geom.tag + ' @' + Math.round(geom.x) + ',' + Math.round(geom.y),
       dump,
       clickProof: geom,
     };
-  }
+  };
+
+  // 1) Large-file modal (any mod): Standard download — never Resumable Beta.
+  const standardHit = pickByLabel(isStandardLabel, 'clicked-standard', 'Standard download');
+  if (standardHit) return standardHit;
+
+  // 2) Free-tier Slow download
+  const slowHit = pickByLabel(isSlowLabel, 'clicked-slow', 'Slow download');
+  if (slowHit) return slowHit;
 
   // Manual
   const manualWalker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
@@ -312,6 +328,7 @@ const SLOW_DOWNLOAD_ASSIST_SCRIPT = `(() => {
 type AssistResult = {
   status:
     | 'clicked-slow'
+    | 'clicked-standard'
     | 'clicked-manual'
     | 'waiting-timer'
     | 'captcha'
@@ -439,13 +456,18 @@ async function cdpForceClickSlowDownload(win: BrowserWindow): Promise<AssistResu
         clickProof: value?.clickProof,
       })
 
-      if (value?.status === 'clicked-slow' && value.clickProof) {
+      if (
+        (value?.status === 'clicked-slow' || value?.status === 'clicked-standard') &&
+        value.clickProof
+      ) {
+        const searchQuery =
+          value.status === 'clicked-standard' ? 'Standard download' : 'Slow download'
         // Coords from iframe are frame-local; convert via DOM quads when possible.
         let x = value.clickProof.x
         let y = value.clickProof.y
         try {
           const search = (await wc.debugger.sendCommand('DOM.performSearch', {
-            query: 'Slow download',
+            query: searchQuery,
             includeUserAgentShadowDOM: true,
           })) as { searchId: string; resultCount: number }
           if (search.resultCount > 0) {
@@ -463,7 +485,8 @@ async function cdpForceClickSlowDownload(win: BrowserWindow): Promise<AssistResu
                 })) as { node?: { nodeName?: string; attributes?: string[] } }
                 const attrs = desc.node?.attributes || []
                 const htmlHint = `${desc.node?.nodeName || ''} ${attrs.join(' ')}`
-                if (/fast/i.test(htmlHint) && !/slow/i.test(htmlHint)) continue
+                if (/resumable/i.test(htmlHint)) continue
+                if (/fast/i.test(htmlHint) && !/slow|standard/i.test(htmlHint)) continue
                 const box = (await wc.debugger.sendCommand('DOM.getContentQuads', {
                   nodeId,
                 })) as { quads?: number[][] }
@@ -476,7 +499,7 @@ async function cdpForceClickSlowDownload(win: BrowserWindow): Promise<AssistResu
                 const minY = Math.min(...ys)
                 const maxY = Math.max(...ys)
                 const area = Math.max(1, (maxX - minX) * (maxY - minY))
-                // Prefer compact Free-tier button over big "Slow download. Wait more." heading
+                // Prefer compact button over large heading text
                 if (!best || area < best.area) {
                   best = {
                     x: (minX + maxX) / 2,
@@ -504,81 +527,93 @@ async function cdpForceClickSlowDownload(win: BrowserWindow): Promise<AssistResu
 
         await cdpDispatchTrustedClick(wc, x, y)
         return {
-          status: 'clicked-slow',
-          detail: `CDP trusted click Slow download @${Math.round(x)},${Math.round(y)} (frame ${String(frame.url || '').slice(0, 48)})`,
+          status: value.status,
+          detail: `CDP trusted click ${searchQuery} @${Math.round(x)},${Math.round(y)} (frame ${String(frame.url || '').slice(0, 48)})`,
           dump: { frames: dumps },
           clickProof: { ...value.clickProof, x, y },
         }
       }
     }
 
-    // 2) Global DOM search fallback (pierces frames) — trusted mouse only
-    try {
-      const search = (await wc.debugger.sendCommand('DOM.performSearch', {
-        query: 'Slow download',
-        includeUserAgentShadowDOM: true,
-      })) as { searchId: string; resultCount: number }
-      dumps.push({ performSearchCount: search.resultCount })
-      if (search.resultCount > 0) {
-        const { nodeIds } = (await wc.debugger.sendCommand('DOM.getSearchResults', {
-          searchId: search.searchId,
-          fromIndex: 0,
-          toIndex: Math.min(search.resultCount, 16),
-        })) as { nodeIds: number[] }
-        let best: { x: number; y: number; area: number; nodeId: number; score: number } | null =
-          null
-        for (const nodeId of nodeIds) {
-          try {
-            const box = (await wc.debugger.sendCommand('DOM.getContentQuads', {
-              nodeId,
-            })) as { quads?: number[][] }
-            const quad = box.quads?.[0]
-            if (!quad || quad.length < 8) continue
-            const xs = [quad[0], quad[2], quad[4], quad[6]]
-            const ys = [quad[1], quad[3], quad[5], quad[7]]
-            const minX = Math.min(...xs)
-            const maxX = Math.max(...xs)
-            const minY = Math.min(...ys)
-            const maxY = Math.max(...ys)
-            const w = maxX - minX
-            const h = maxY - minY
-            if (w < 8 || h < 8) continue
-            const area = Math.max(1, w * h)
-            // Prefer compact Free-tier button (~wide, short) over large heading text
-            const score = (h <= 90 ? 100000 : 0) + (w <= 420 ? 50000 : 0) - area
-            if (!best || score > best.score) {
-              best = { x: (minX + maxX) / 2, y: (minY + maxY) / 2, area, nodeId, score }
+    // 2) Global DOM search fallback — Standard first (any large-file modal), then Slow
+    for (const query of ['Standard download', 'Slow download'] as const) {
+      try {
+        const search = (await wc.debugger.sendCommand('DOM.performSearch', {
+          query,
+          includeUserAgentShadowDOM: true,
+        })) as { searchId: string; resultCount: number }
+        dumps.push({ performSearchQuery: query, performSearchCount: search.resultCount })
+        if (search.resultCount > 0) {
+          const { nodeIds } = (await wc.debugger.sendCommand('DOM.getSearchResults', {
+            searchId: search.searchId,
+            fromIndex: 0,
+            toIndex: Math.min(search.resultCount, 16),
+          })) as { nodeIds: number[] }
+          let best: { x: number; y: number; area: number; nodeId: number; score: number } | null =
+            null
+          for (const nodeId of nodeIds) {
+            try {
+              const desc = (await wc.debugger.sendCommand('DOM.describeNode', {
+                nodeId,
+                depth: 0,
+              })) as { node?: { nodeName?: string; attributes?: string[] } }
+              const attrs = desc.node?.attributes || []
+              const htmlHint = `${desc.node?.nodeName || ''} ${attrs.join(' ')}`
+              if (/resumable/i.test(htmlHint)) continue
+              if (query === 'Slow download' && /fast/i.test(htmlHint) && !/slow/i.test(htmlHint)) {
+                continue
+              }
+              const box = (await wc.debugger.sendCommand('DOM.getContentQuads', {
+                nodeId,
+              })) as { quads?: number[][] }
+              const quad = box.quads?.[0]
+              if (!quad || quad.length < 8) continue
+              const xs = [quad[0], quad[2], quad[4], quad[6]]
+              const ys = [quad[1], quad[3], quad[5], quad[7]]
+              const minX = Math.min(...xs)
+              const maxX = Math.max(...xs)
+              const minY = Math.min(...ys)
+              const maxY = Math.max(...ys)
+              const w = maxX - minX
+              const h = maxY - minY
+              if (w < 8 || h < 8) continue
+              const area = Math.max(1, w * h)
+              const score = (h <= 90 ? 100000 : 0) + (w <= 420 ? 50000 : 0) - area
+              if (!best || score > best.score) {
+                best = { x: (minX + maxX) / 2, y: (minY + maxY) / 2, area, nodeId, score }
+              }
+            } catch {
+              // next
             }
-          } catch {
-            // next
+          }
+          await wc.debugger.sendCommand('DOM.discardSearchResults', { searchId: search.searchId })
+          if (best) {
+            await cdpDispatchTrustedClick(wc, best.x, best.y)
+            return {
+              status: query === 'Standard download' ? 'clicked-standard' : 'clicked-slow',
+              detail: `CDP DOM-search trusted click ${query} @${Math.round(best.x)},${Math.round(best.y)} area=${Math.round(best.area)}`,
+              dump: { frames: dumps, best },
+              clickProof: {
+                x: best.x,
+                y: best.y,
+                w: 0,
+                h: 0,
+                tag: 'DOMSearch',
+              },
+            }
           }
         }
-        await wc.debugger.sendCommand('DOM.discardSearchResults', { searchId: search.searchId })
-        if (best) {
-          await cdpDispatchTrustedClick(wc, best.x, best.y)
-          return {
-            status: 'clicked-slow',
-            detail: `CDP DOM-search trusted click Slow download @${Math.round(best.x)},${Math.round(best.y)} area=${Math.round(best.area)}`,
-            dump: { frames: dumps, best },
-            clickProof: {
-              x: best.x,
-              y: best.y,
-              w: 0,
-              h: 0,
-              tag: 'DOMSearch',
-            },
-          }
-        }
+      } catch (err) {
+        dumps.push({
+          searchError: err instanceof Error ? err.message : String(err),
+          query,
+        })
       }
-    } catch (err) {
-      dumps.push({
-        searchError: err instanceof Error ? err.message : String(err),
-      })
     }
 
     return {
       status: 'not-found',
-      detail: 'CDP did not find a clickable Slow download control.',
+      detail: 'CDP did not find a clickable Slow/Standard download control.',
       dump: { frames: dumps },
     }
   } catch (err) {
@@ -596,9 +631,9 @@ async function cdpForceClickSlowDownload(win: BrowserWindow): Promise<AssistResu
 }
 
 /**
- * Try to click Slow Download / Manual Download only.
+ * Try to click Standard (large-file modal, any mod) / Slow / Manual Download.
  * Nexus ignores untrusted el.click() — CDP / sendInputEvent trusted mouse is required.
- * Never clicks Vortex / Fast / Premium. Never solves CAPTCHA.
+ * Never clicks Vortex / Fast / Premium / Resumable Beta. Never solves CAPTCHA.
  */
 export async function tryAssistSlowDownload(win: BrowserWindow): Promise<AssistResult> {
   if (win.isDestroyed()) return { status: 'error', detail: 'Browser closed.' }
@@ -617,8 +652,13 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<AssistR
     try {
       const found = (await win.webContents.executeJavaScript(SLOW_DOWNLOAD_ASSIST_SCRIPT, true)) as AssistResult
       if (found?.status === 'captcha' || found?.status === 'waiting-timer') return found
-      if (found?.status === 'clicked-slow' && found.clickProof) {
+      if (
+        (found?.status === 'clicked-slow' || found?.status === 'clicked-standard') &&
+        found.clickProof
+      ) {
         const { x, y } = found.clickProof
+        const label =
+          found.status === 'clicked-standard' ? 'Standard download' : 'Slow download'
         try {
           win.webContents.debugger.attach('1.3')
         } catch {
@@ -627,8 +667,8 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<AssistR
         try {
           await cdpDispatchTrustedClick(win.webContents, x, y)
           return {
-            status: 'clicked-slow',
-            detail: `Trusted click Slow download @${Math.round(x)},${Math.round(y)} (${found.clickProof.tag})`,
+            status: found.status,
+            detail: `Trusted click ${label} @${Math.round(x)},${Math.round(y)} (${found.clickProof.tag})`,
             dump: found.dump,
             clickProof: found.clickProof,
           }
@@ -644,11 +684,12 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<AssistR
       // fall through to full CDP path
     }
 
-    // 2) Full multi-frame CDP path
+    // 2) Full multi-frame CDP path (Slow + Standard via same assist script per frame)
     const cdp = await cdpForceClickSlowDownload(win)
     if (
       cdp &&
       (cdp.status === 'clicked-slow' ||
+        cdp.status === 'clicked-standard' ||
         cdp.status === 'clicked-manual' ||
         cdp.status === 'waiting-timer' ||
         cdp.status === 'captcha')
@@ -658,7 +699,7 @@ export async function tryAssistSlowDownload(win: BrowserWindow): Promise<AssistR
 
     return {
       status: 'not-found',
-      detail: `Trusted CDP click missed Slow download — retrying… ${JSON.stringify(cdp?.detail || cdp?.dump).slice(0, 240)}`,
+      detail: `Trusted CDP click missed Slow/Standard download — retrying… ${JSON.stringify(cdp?.detail || cdp?.dump).slice(0, 240)}`,
       dump: cdp?.dump || undefined,
     }
   } catch (err) {

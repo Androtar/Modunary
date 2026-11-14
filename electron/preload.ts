@@ -62,6 +62,7 @@ export interface BannerlordApi {
   launchProfile: (id: string) => Promise<LaunchResult>
   setPaths: (gameInstallPath: string | null, documentsPath: string | null) => Promise<AppStore>
   setAllowSteamBetaKeyWrite: (allow: boolean) => Promise<AppStore>
+  setShowNexusBrowserDuringCollection: (show: boolean) => Promise<AppStore>
   getDiscovery: () => Promise<GameDiscovery>
   listVault: () => Promise<string[]>
   importModulesToVault: () => Promise<{ imported: string[]; skipped: string[] }>
@@ -166,6 +167,8 @@ const api: BannerlordApi = {
     ipcRenderer.invoke('paths:set', gameInstallPath, documentsPath),
   setAllowSteamBetaKeyWrite: (allow) =>
     ipcRenderer.invoke('settings:setAllowSteamBetaKeyWrite', allow),
+  setShowNexusBrowserDuringCollection: (show) =>
+    ipcRenderer.invoke('settings:setShowNexusBrowserDuringCollection', show),
   getDiscovery: () => ipcRenderer.invoke('discovery:get'),
   listVault: () => ipcRenderer.invoke('vault:list'),
   importModulesToVault: () => ipcRenderer.invoke('vault:importModules'),
