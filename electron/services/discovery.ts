@@ -1,9 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { XMLParser } from 'fast-xml-parser'
-import type { DiscoveredMod, GameDiscovery } from '../types'
+import { OFFICIAL_MODULE_IDS, type DiscoveredMod, type GameDiscovery } from '../types'
+import { detectBlse } from './launch'
 import {
   findSteamAppManifest,
+  findSteamExe,
   resolvePaths,
 } from './paths'
 
@@ -13,6 +15,8 @@ const xmlParser = new XMLParser({
   textNodeName: '#text',
 })
 
+const OFFICIAL = new Set<string>(OFFICIAL_MODULE_IDS)
+
 function textOf(node: unknown): string {
   if (node == null) return ''
   if (typeof node === 'string' || typeof node === 'number') return String(node)
@@ -20,6 +24,14 @@ function textOf(node: unknown): string {
     return String((node as { '#text': string })['#text'] ?? '')
   }
   return ''
+}
+
+function attrOrText(node: unknown): string {
+  if (node == null) return ''
+  if (typeof node === 'object' && node !== null && '@_value' in node) {
+    return String((node as { '@_value'?: string })['@_value'] ?? '')
+  }
+  return textOf(node)
 }
 
 export function parseSubModuleXml(filePath: string): {
@@ -32,9 +44,9 @@ export function parseSubModuleXml(filePath: string): {
     const doc = xmlParser.parse(raw)
     const root = doc?.ModuleInfo ?? doc?.Module ?? doc
     if (!root) return null
-    const id = textOf(root.Id) || textOf(root.Name)
-    const name = textOf(root.Name) || id
-    const version = textOf(root.Version) || 'unknown'
+    const id = attrOrText(root.Id) || attrOrText(root.Name)
+    const name = attrOrText(root.Name) || id
+    const version = attrOrText(root.Version) || 'unknown'
     if (!id) return null
     return { id, name, version }
   } catch {
@@ -48,7 +60,7 @@ export function discoverMods(modulesDir: string): DiscoveredMod[] {
   const mods: DiscoveredMod[] = []
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
     const folder = entry.name
     const sub = path.join(modulesDir, folder, 'SubModule.xml')
     if (!fs.existsSync(sub)) continue
@@ -60,6 +72,7 @@ export function discoverMods(modulesDir: string): DiscoveredMod[] {
       name: meta.name,
       version: meta.version,
       path: path.join(modulesDir, folder),
+      official: OFFICIAL.has(meta.id) || OFFICIAL.has(folder),
     })
   }
 
@@ -104,14 +117,19 @@ export function discoverGame(
     warnings.push('Bannerlord install not found. Set the game path in Settings.')
   }
   if (!paths.documentsPath || !fs.existsSync(paths.documentsPath)) {
-    warnings.push('Documents Bannerlord folder not found yet (will be created on activate if needed).')
+    warnings.push(
+      'Documents Bannerlord folder not found yet (will be created on activate if needed).',
+    )
   }
   if (paths.launcherDataPath && !fs.existsSync(paths.launcherDataPath)) {
-    warnings.push('LauncherData.xml not found — create a profile after launching the game once, or capture after first run.')
+    warnings.push(
+      'LauncherData.xml not found — create a profile after launching the game once, or capture after first run.',
+    )
   }
 
   const mods = paths.modulesPath ? discoverMods(paths.modulesPath) : []
   const manifest = findSteamAppManifest(paths.gameInstallPath)
+  const blse = detectBlse(paths.gameInstallPath)
 
   return {
     installPath: paths.gameInstallPath,
@@ -121,6 +139,8 @@ export function discoverGame(
     detectedGameVersion: detectGameVersion(paths.gameInstallPath),
     steamAppManifestPath: manifest,
     steamBetaBranch: readSteamBetaBranch(manifest),
+    steamExePath: findSteamExe(),
+    blse,
     mods,
     warnings,
   }

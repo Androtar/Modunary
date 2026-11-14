@@ -5,12 +5,19 @@ export interface ModEntry {
   version: string
   enabled: boolean
   order: number
+  /** Where the mod was sourced from when known. */
+  source?: 'local' | 'nexus' | 'steam' | 'moddb' | 'manual'
+  sourceId?: string
 }
 
 export interface ProfileSettings {
   notes: string
   autoBackupLauncherData: boolean
-  preferredLauncher: 'official' | 'blse' | 'steam'
+  /** If true, Launch button uses BLSE; otherwise Steam. */
+  requiresBlse: boolean
+  preferredLauncher: 'blse' | 'steam'
+  /** Prefer directory junctions from vault (faster) vs full copy. */
+  vaultDeployMode: 'junction' | 'copy'
 }
 
 export interface ModProfile {
@@ -19,10 +26,12 @@ export interface ModProfile {
   createdAt: string
   updatedAt: string
   gameVersion: string
-  /** Optional Steam beta branch name to request on activate (best-effort). */
+  /** Steam beta branch / BetaKey to request on activate (e.g. "v1.3.15"). */
   steamBetaBranch: string
   mods: ModEntry[]
   settings: ProfileSettings
+  /** True when UI edits differ from last saved/activated snapshot (renderer-tracked, persisted lightly). */
+  dirty?: boolean
 }
 
 export interface AppPaths {
@@ -32,6 +41,7 @@ export interface AppPaths {
   launcherDataPath: string | null
   storePath: string
   backupsPath: string
+  vaultPath: string
 }
 
 export interface DiscoveredMod {
@@ -40,6 +50,14 @@ export interface DiscoveredMod {
   name: string
   version: string
   path: string
+  official: boolean
+}
+
+export interface BlseInfo {
+  installed: boolean
+  launcherPath: string | null
+  launcherExPath: string | null
+  standalonePath: string | null
 }
 
 export interface GameDiscovery {
@@ -50,18 +68,71 @@ export interface GameDiscovery {
   detectedGameVersion: string | null
   steamAppManifestPath: string | null
   steamBetaBranch: string | null
+  steamExePath: string | null
+  blse: BlseInfo
   mods: DiscoveredMod[]
   warnings: string[]
 }
 
+export interface SecretsStatus {
+  nexusApiKeySet: boolean
+  steamWebApiKeySet: boolean
+  moddbUsernameSet: boolean
+  moddbPasswordSet: boolean
+  nexusAppIdSet: boolean
+  /** Paths / env hints for Stephen. */
+  hooks: {
+    secretsFile: string
+    envNexus: string
+    envSteam: string
+    envModdbUser: string
+    envModdbPass: string
+    envNexusAppId: string
+  }
+}
+
+export interface StoreSearchResult {
+  store: 'nexus' | 'steam' | 'moddb'
+  id: string
+  name: string
+  summary: string
+  author?: string
+  url: string
+  downloads?: number
+  imageUrl?: string
+  /** Download possible in-app without browser. */
+  canDownloadInApp: boolean
+  note?: string
+}
+
+export interface StoreSearchResponse {
+  ok: boolean
+  results: StoreSearchResult[]
+  error?: string
+  needsKey?: boolean
+  needsPremium?: boolean
+  manualUrl?: string
+}
+
 export interface AppStore {
-  version: 1
+  version: 2
   activeProfileId: string | null
   gameInstallPath: string | null
   documentsPath: string | null
   profiles: ModProfile[]
   lastActivatedAt: string | null
   lastActivationNotes: string[]
+  /** Opt-in: allow rewriting Steam appmanifest BetaKey when user confirms version switch. */
+  allowSteamBetaKeyWrite: boolean
+}
+
+export interface ActivateOptions {
+  /** User confirmed the version-switch modal (Continue). */
+  confirmVersionSwitch?: boolean
+  /** If current active profile is dirty, save it under this name before switching. */
+  saveUnsavedAs?: string | null
+  /** Attempt Steam BetaKey write after user Continue. */
+  attemptSteamVersionSwitch?: boolean
 }
 
 export interface ActivateResult {
@@ -71,6 +142,13 @@ export interface ActivateResult {
   launcherDataPath: string
   versionNotes: string[]
   warnings: string[]
+  vaultNotes: string[]
+  /** True when caller must show the version-switch modal before proceeding. */
+  needsVersionSwitchConfirm?: boolean
+  requiredVersion?: string
+  currentVersion?: string | null
+  steamVersionSwitchAttempted?: boolean
+  steamVersionSwitchOk?: boolean
 }
 
 export interface CreateProfileInput {
@@ -79,18 +157,38 @@ export interface CreateProfileInput {
   gameVersion?: string
 }
 
+export interface LaunchResult {
+  ok: boolean
+  mode: 'blse' | 'steam'
+  command: string
+  message: string
+}
+
+export const OFFICIAL_MODULE_IDS = [
+  'Native',
+  'SandBoxCore',
+  'Sandbox',
+  'StoryMode',
+  'CustomBattle',
+  'BirthAndDeath',
+  'Multiplayer',
+] as const
+
 export const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
   notes: '',
   autoBackupLauncherData: true,
-  preferredLauncher: 'official',
+  requiresBlse: false,
+  preferredLauncher: 'steam',
+  vaultDeployMode: 'junction',
 }
 
 export const EMPTY_STORE: AppStore = {
-  version: 1,
+  version: 2,
   activeProfileId: null,
   gameInstallPath: null,
   documentsPath: null,
   profiles: [],
   lastActivatedAt: null,
   lastActivationNotes: [],
+  allowSteamBetaKeyWrite: true,
 }

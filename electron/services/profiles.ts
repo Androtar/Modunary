@@ -19,6 +19,27 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
+function migrateProfile(raw: ModProfile): ModProfile {
+  const settings = {
+    ...DEFAULT_PROFILE_SETTINGS,
+    ...(raw.settings || {}),
+  } as ProfileSettings
+  // Migrate old preferredLauncher 'official' → steam
+  const preferred = String(settings.preferredLauncher)
+  if (preferred === 'official') settings.preferredLauncher = 'steam'
+  if (settings.requiresBlse == null) {
+    settings.requiresBlse = settings.preferredLauncher === 'blse'
+  }
+  if (!settings.vaultDeployMode) settings.vaultDeployMode = 'junction'
+  return {
+    ...raw,
+    steamBetaBranch: raw.steamBetaBranch ?? '',
+    mods: Array.isArray(raw.mods) ? raw.mods : [],
+    settings,
+    dirty: Boolean(raw.dirty),
+  }
+}
+
 export function loadStore(): AppStore {
   ensureAppDirs()
   const storePath = getStorePath()
@@ -28,11 +49,16 @@ export function loadStore(): AppStore {
     return store
   }
   try {
-    const raw = JSON.parse(fs.readFileSync(storePath, 'utf8')) as AppStore
+    const raw = JSON.parse(fs.readFileSync(storePath, 'utf8')) as Partial<AppStore>
+    const profiles = Array.isArray(raw.profiles)
+      ? raw.profiles.map((p) => migrateProfile(p as ModProfile))
+      : []
     return {
       ...EMPTY_STORE,
       ...raw,
-      profiles: Array.isArray(raw.profiles) ? raw.profiles : [],
+      version: 2,
+      profiles,
+      allowSteamBetaKeyWrite: raw.allowSteamBetaKeyWrite !== false,
     }
   } catch {
     const bak = `${storePath}.corrupt-${Date.now()}.json`
@@ -114,6 +140,11 @@ export function createProfile(input: CreateProfileInput): ModProfile {
     ? []
     : captureModsFromDisk(store)
 
+  const enabledIds = new Set(mods.filter((m) => m.enabled).map((m) => m.id))
+  const requiresBlse =
+    discovery.blse.installed &&
+    (enabledIds.has('Bannerlord.Harmony') || enabledIds.has('Bannerlord.ButterLib'))
+
   const profile: ModProfile = {
     id: randomUUID(),
     name,
@@ -122,7 +153,11 @@ export function createProfile(input: CreateProfileInput): ModProfile {
     gameVersion: input.gameVersion || discovery.detectedGameVersion || 'unknown',
     steamBetaBranch: discovery.steamBetaBranch || '',
     mods,
-    settings: { ...DEFAULT_PROFILE_SETTINGS },
+    settings: {
+      ...DEFAULT_PROFILE_SETTINGS,
+      requiresBlse,
+      preferredLauncher: requiresBlse ? 'blse' : 'steam',
+    },
   }
 
   store.profiles.push(profile)
@@ -217,6 +252,7 @@ export function reorderMods(id: string, orderedIds: string[]): ModProfile {
   }
   profile.mods = next
   profile.updatedAt = nowIso()
+  profile.dirty = true
   saveStore(store)
   return profile
 }
@@ -229,6 +265,7 @@ export function setModEnabled(id: string, modId: string, enabled: boolean): ModP
   if (!mod) throw new Error('Mod not found in profile.')
   mod.enabled = enabled
   profile.updatedAt = nowIso()
+  profile.dirty = true
   saveStore(store)
   return profile
 }
@@ -268,6 +305,59 @@ export function syncModsFromDisk(id: string): { profile: ModProfile; added: numb
   profile.updatedAt = nowIso()
   saveStore(store)
   return { profile, added }
+}
+
+export function addModulesToProfile(
+  id: string,
+  modules: Array<{ folderName: string; id: string; name: string; version: string; source?: ModEntry['source']; sourceId?: string }>,
+  enabled = true,
+): ModProfile {
+  const store = loadStore()
+  const profile = store.profiles.find((p) => p.id === id)
+  if (!profile) throw new Error('Profile not found.')
+  const byId = new Map(profile.mods.map((m) => [m.id, m]))
+  let order = profile.mods.length
+  for (const mod of modules) {
+    const existing = byId.get(mod.id)
+    if (existing) {
+      existing.folderName = mod.folderName
+      existing.name = mod.name
+      existing.version = mod.version
+      if (mod.source) existing.source = mod.source
+      if (mod.sourceId) existing.sourceId = mod.sourceId
+      continue
+    }
+    profile.mods.push({
+      id: mod.id,
+      folderName: mod.folderName,
+      name: mod.name,
+      version: mod.version,
+      enabled,
+      order: order++,
+      source: mod.source,
+      sourceId: mod.sourceId,
+    })
+  }
+  profile.updatedAt = nowIso()
+  profile.dirty = true
+  saveStore(store)
+  return profile
+}
+
+export function setProfileDirty(id: string, dirty: boolean): ModProfile {
+  const store = loadStore()
+  const profile = store.profiles.find((p) => p.id === id)
+  if (!profile) throw new Error('Profile not found.')
+  profile.dirty = dirty
+  saveStore(store)
+  return profile
+}
+
+export function setAllowSteamBetaKeyWrite(allow: boolean): AppStore {
+  const store = loadStore()
+  store.allowSteamBetaKeyWrite = allow
+  saveStore(store)
+  return store
 }
 
 export function duplicateProfile(id: string, newName?: string): ModProfile {

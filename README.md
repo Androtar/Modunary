@@ -1,20 +1,14 @@
 # Bannerlord Mod Profiles
 
-Desktop app for managing Mount & Blade II: Bannerlord **mod profiles** — each profile remembers game version, mods, load order, enabled/disabled state, and notes. Activating a profile deploys that loadout to the official launcher config.
+Desktop app for Mount & Blade II: Bannerlord **mod profiles** with per-profile **module vaulting**, opt-in **Steam version switch**, **BLSE/Steam launch**, and **Steam / Nexus / ModDB** browsing.
 
 ## Stack
 
-- **Electron** + **Vite** + **React** + **TypeScript**
-- Local JSON store under Electron `userData`
-- Reads/writes Bannerlord `LauncherData.xml`
+- Electron + Vite + React + TypeScript
+- JSON store + vault under Electron `userData`
+- Secrets via Electron `safeStorage` (env fallbacks supported)
 
-## Requirements
-
-- Windows
-- Node.js 20+ (LTS recommended)
-- Mount & Blade II: Bannerlord installed (Steam recommended; path override supported)
-
-## Run locally
+## Run
 
 ```powershell
 cd E:\BannerlordModApp
@@ -22,46 +16,46 @@ npm install
 npm run dev
 ```
 
-`npm run dev` starts Vite and Electron together via `vite-plugin-electron`.
-
-## What works in this pass
+## What works
 
 | Feature | Status |
 | --- | --- |
-| Create / rename / delete / list / duplicate profiles | Implemented |
-| Capture current mods + order + enabled from `LauncherData.xml` | Implemented |
-| Sync newly installed Modules into a profile (keep order) | Implemented |
-| Edit enabled flags and load order | Implemented |
-| Activate → backup + write `LauncherData.xml` | Implemented |
-| Remember target Bannerlord version per profile | Implemented |
-| Auto-detect Steam libraries / Modules / Documents | Implemented |
-| Manual path overrides | Implemented |
-| Mirror profile copy under Documents `Configs/ModProfiles` | Implemented |
-| Steam/GOG binary version switch | **Best-effort warn only** (does not rewrite Steam manifests) |
-| Copy/symlink different module folder sets per profile | Stubbed / not in this pass |
-| Launch BLSE / Steam after activate | Stubbed (preference stored only) |
+| Profile CRUD / duplicate / dirty flag | Implemented |
+| Per-profile vault deploy on activate (junction/copy) | Implemented |
+| LauncherData backup + write | Implemented |
+| Version-switch modal (Continue / Cancel + optional save-as) | Implemented |
+| Opt-in Steam BetaKey write + validate | Implemented |
+| Launch via BLSE / Launch via Steam | Implemented |
+| Nexus search + Premium CDN download | Implemented (key required; Premium for CDN) |
+| Steam Workshop search + subscribe/import | Implemented (Web API key required) |
+| ModDB search | Best-effort scrape + browser; ZIP/folder import |
+| Vortex | **Ignored by design** |
+
+## Keys Stephen may need to provide
+
+- `NEXUS_API_KEY` (and Premium for one-click Nexus downloads)
+- Optional `NEXUS_APP_ID` after registering the app for Nexus SSO
+- `STEAM_WEB_API_KEY` from https://steamcommunity.com/dev/apikey
+- Optional ModDB username/password (no official API)
+
+Paste in **Paths & version → Store credentials**, or set env vars before launch.
 
 ## Key paths
 
-| What | Typical location |
+| What | Location |
 | --- | --- |
 | App store | `%APPDATA%\bannerlord-mod-profiles\store.json` |
-| Activation backups | `%APPDATA%\bannerlord-mod-profiles\backups\` |
-| Game modules | `<Bannerlord>\Modules\` |
-| Launcher loadout | `%USERPROFILE%\Documents\Mount and Blade II Bannerlord\Configs\LauncherData.xml` |
-| Profile mirrors | `...\Configs\ModProfiles\<name>\LauncherData.xml` |
+| Module vault | `%APPDATA%\bannerlord-mod-profiles\vault\modules\` |
+| Secrets | `%APPDATA%\bannerlord-mod-profiles\secrets.enc.json` |
+| Backups | `%APPDATA%\bannerlord-mod-profiles\backups\` |
+| Game Modules | `<Bannerlord>\Modules\` |
+| LauncherData | `Documents\...\Configs\LauncherData.xml` |
 
 ## Project layout
 
 ```
-electron/           Main process, IPC, discovery, profiles, activate
-src/                React UI
-docs note (Context) Project store: docs/bannerlord-mod-profiles.md
+electron/           Main process, IPC, vault, stores, activate, launch
+src/                React UI (profiles, stores, version modal)
 ```
 
-## Safety notes
-
-- Activation **backs up** the current `LauncherData.xml` before overwriting mod selection/order.
-- Existing non-mod sections in `LauncherData.xml` (e.g. DLL check data) are preserved when possible.
-- Module folders are **not** deleted or moved. Disabled mods stay on disk, unchecked in the launcher.
-- Changing Bannerlord **binaries** requires Steam (Betas / depot) or your storefront. This app records the desired version and warns on mismatch.
+Architecture note (Project Context): `docs/bannerlord-mod-profiles.md`

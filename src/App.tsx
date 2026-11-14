@@ -4,10 +4,13 @@ import type {
   AppStore,
   GameDiscovery,
   ModProfile,
+  SecretsStatus,
+  StoreSearchResult,
 } from '../electron/types'
 import './App.css'
 
-type Tab = 'mods' | 'settings' | 'about'
+type Tab = 'mods' | 'stores' | 'settings' | 'about'
+type StoreKind = 'nexus' | 'steam' | 'moddb'
 
 export default function App() {
   const [store, setStore] = useState<AppStore | null>(null)
@@ -19,14 +22,35 @@ export default function App() {
     null,
   )
   const [filter, setFilter] = useState('')
+  const [secrets, setSecrets] = useState<SecretsStatus | null>(null)
+  const [vaultCount, setVaultCount] = useState(0)
+
+  // Version switch modal
+  const [versionModal, setVersionModal] = useState<{
+    profileId: string
+    requiredVersion: string
+    currentVersion: string | null
+  } | null>(null)
+  const [saveAsName, setSaveAsName] = useState('')
+
+  // Stores tab
+  const [storeKind, setStoreKind] = useState<StoreKind>('nexus')
+  const [storeQuery, setStoreQuery] = useState('')
+  const [storeResults, setStoreResults] = useState<StoreSearchResult[]>([])
+  const [storeError, setStoreError] = useState<string | null>(null)
+  const [storeManualUrl, setStoreManualUrl] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    const [nextStore, nextDiscovery] = await Promise.all([
+    const [nextStore, nextDiscovery, nextSecrets, vault] = await Promise.all([
       window.bannerlord.getStore(),
       window.bannerlord.getDiscovery(),
+      window.bannerlord.getSecretsStatus(),
+      window.bannerlord.listVault(),
     ])
     setStore(nextStore)
     setDiscovery(nextDiscovery)
+    setSecrets(nextSecrets)
+    setVaultCount(vault.length)
     setSelectedId((prev) => {
       if (prev && nextStore.profiles.some((p) => p.id === prev)) return prev
       return nextStore.activeProfileId ?? nextStore.profiles[0]?.id ?? null
@@ -44,6 +68,11 @@ export default function App() {
     [store, selectedId],
   )
 
+  const activeProfile = useMemo(
+    () => store?.profiles.find((p) => p.id === store.activeProfileId) ?? null,
+    [store],
+  )
+
   const filteredMods = useMemo(() => {
     if (!selected) return []
     const q = filter.trim().toLowerCase()
@@ -57,6 +86,11 @@ export default function App() {
     )
   }, [selected, filter])
 
+  const launchLabel =
+    selected?.settings.requiresBlse || selected?.settings.preferredLauncher === 'blse'
+      ? 'Launch via BLSE'
+      : 'Launch via Steam'
+
   async function withBusy(fn: () => Promise<void>) {
     setBusy(true)
     setMessage(null)
@@ -67,6 +101,110 @@ export default function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  function summarizeActivate(result: ActivateResult, name: string) {
+    const lines = [
+      `Activated "${name}".`,
+      `Wrote: ${result.launcherDataPath}`,
+      result.backupPath ? `Backup: ${result.backupPath}` : null,
+      ...result.versionNotes,
+      ...result.vaultNotes,
+      ...result.warnings,
+    ].filter(Boolean)
+    setMessage({
+      kind: result.warnings.length ? 'warn' : 'ok',
+      text: lines.join('\n'),
+    })
+  }
+
+  async function runActivate(
+    profileId: string,
+    options?: {
+      confirmVersionSwitch?: boolean
+      saveUnsavedAs?: string | null
+      attemptSteamVersionSwitch?: boolean
+    },
+  ) {
+    const profile = store?.profiles.find((p) => p.id === profileId)
+    if (!profile) return
+    const result = await window.bannerlord.activateProfile(profileId, options)
+    if (result.needsVersionSwitchConfirm) {
+      setVersionModal({
+        profileId,
+        requiredVersion: result.requiredVersion || profile.gameVersion,
+        currentVersion: result.currentVersion ?? null,
+      })
+      setSaveAsName('')
+      return
+    }
+    setVersionModal(null)
+    await refresh()
+    summarizeActivate(result, profile.name)
+  }
+
+  async function onActivate() {
+    if (!selected) return
+    await withBusy(async () => {
+      await runActivate(selected.id)
+    })
+  }
+
+  async function onVersionContinue() {
+    if (!versionModal || !store) return
+    const current = store.profiles.find((p) => p.id === store.activeProfileId)
+    const needsSave =
+      current &&
+      current.id !== versionModal.profileId &&
+      (current.dirty || false)
+
+    let saveUnsavedAs: string | null = null
+    if (needsSave) {
+      const name = saveAsName.trim()
+      if (!name) {
+        setMessage({
+          kind: 'warn',
+          text: 'Current profile has unsaved changes. Enter a name to save them as a separate profile, or clear dirty state first.',
+        })
+        return
+      }
+      saveUnsavedAs = name
+    }
+
+    await withBusy(async () => {
+      await runActivate(versionModal.profileId, {
+        confirmVersionSwitch: true,
+        saveUnsavedAs,
+        attemptSteamVersionSwitch: true,
+      })
+    })
+  }
+
+  function onVersionCancel() {
+    setVersionModal(null)
+    setMessage({
+      kind: 'ok',
+      text: 'Version switch cancelled. Nothing was changed.',
+    })
+  }
+
+  async function onLaunch() {
+    if (!selected) return
+    await withBusy(async () => {
+      // Ensure activated first if not active
+      if (store?.activeProfileId !== selected.id) {
+        setMessage({
+          kind: 'warn',
+          text: 'Activate this profile before launching so vault + load order match.',
+        })
+        return
+      }
+      const result = await window.bannerlord.launchProfile(selected.id)
+      setMessage({
+        kind: result.ok ? 'ok' : 'error',
+        text: result.message,
+      })
+    })
   }
 
   async function onCreate() {
@@ -103,25 +241,6 @@ export default function App() {
       await window.bannerlord.deleteProfile(selected.id)
       await refresh()
       setMessage({ kind: 'ok', text: `Deleted "${selected.name}".` })
-    })
-  }
-
-  async function onActivate() {
-    if (!selected) return
-    await withBusy(async () => {
-      const result: ActivateResult = await window.bannerlord.activateProfile(selected.id)
-      await refresh()
-      const lines = [
-        `Activated "${selected.name}".`,
-        `Wrote: ${result.launcherDataPath}`,
-        result.backupPath ? `Backup: ${result.backupPath}` : null,
-        ...result.versionNotes,
-        ...result.warnings,
-      ].filter(Boolean)
-      setMessage({
-        kind: result.warnings.length ? 'warn' : 'ok',
-        text: lines.join('\n'),
-      })
     })
   }
 
@@ -226,16 +345,93 @@ export default function App() {
     })
   }
 
+  async function onSearchStore() {
+    await withBusy(async () => {
+      const res = await window.bannerlord.searchStore(storeKind, storeQuery)
+      setStoreResults(res.results)
+      setStoreError(res.error || null)
+      setStoreManualUrl(res.manualUrl || null)
+      if (!res.ok && res.needsKey) {
+        setMessage({ kind: 'warn', text: res.error || 'API key required.' })
+      }
+    })
+  }
+
+  async function addImportedToProfile(
+    modules: Array<{ folderName: string; id: string; name: string; version: string }>,
+    source: 'nexus' | 'steam' | 'moddb' | 'manual',
+    sourceId?: string,
+  ) {
+    if (!selected || modules.length === 0) return
+    await window.bannerlord.addModules(
+      selected.id,
+      modules.map((m) => ({ ...m, source, sourceId })),
+      true,
+    )
+    await refresh()
+  }
+
+  async function onImportZip() {
+    const zip = await window.bannerlord.pickZip()
+    if (!zip) return
+    await withBusy(async () => {
+      const res = await window.bannerlord.importZip(zip)
+      if (!res.ok) throw new Error(res.error || 'Import failed')
+      await addImportedToProfile(
+        res.modules as Array<{ folderName: string; id: string; name: string; version: string }>,
+        'manual',
+      )
+      setMessage({
+        kind: 'ok',
+        text: `Imported ${(res.modules as unknown[]).length} module(s) into vault and profile.`,
+      })
+    })
+  }
+
+  async function onImportFolder() {
+    const dir = await window.bannerlord.pickDirectory('Select module folder')
+    if (!dir) return
+    await withBusy(async () => {
+      const res = await window.bannerlord.importFolder(dir)
+      if (!res.ok) throw new Error(res.error || 'Import failed')
+      await addImportedToProfile(
+        res.modules as Array<{ folderName: string; id: string; name: string; version: string }>,
+        'manual',
+      )
+      setMessage({
+        kind: 'ok',
+        text: `Imported ${(res.modules as unknown[]).length} module(s) into vault and profile.`,
+      })
+    })
+  }
+
+  async function onImportModulesToVault() {
+    await withBusy(async () => {
+      const res = await window.bannerlord.importModulesToVault()
+      await refresh()
+      setMessage({
+        kind: 'ok',
+        text: `Vaulted ${res.imported.length} module folder(s) from Modules (official skipped: ${res.skipped.length}).`,
+      })
+    })
+  }
+
   if (!store) {
     return <div className="empty">Loading Bannerlord Mod Profiles…</div>
   }
+
+  const dirtyCurrent =
+    activeProfile &&
+    versionModal &&
+    activeProfile.id !== versionModal.profileId &&
+    Boolean(activeProfile.dirty)
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <h1>Bannerlord Mod Profiles</h1>
-          <p>Switch loadouts, order, and target game version</p>
+          <p>Vaulted loadouts · version switch · Steam / Nexus / ModDB</p>
         </div>
 
         <div className="sidebar-actions">
@@ -262,9 +458,11 @@ export default function App() {
               >
                 <span className="name">{p.name}</span>
                 <span className="meta">
-                  v{p.gameVersion} · {p.mods.filter((m) => m.enabled).length}/{p.mods.length} enabled
+                  v{p.gameVersion} · {p.mods.filter((m) => m.enabled).length}/{p.mods.length} ·{' '}
+                  {p.settings.requiresBlse ? 'BLSE' : 'Steam'}
                 </span>
                 {store.activeProfileId === p.id && <span className="badge">Active</span>}
+                {p.dirty && <span className="badge dirty">Unsaved</span>}
               </button>
             ))}
         </div>
@@ -272,7 +470,11 @@ export default function App() {
         <div className="callout">
           Detected game: {discovery?.detectedGameVersion ?? 'unknown'}
           {'\n'}
-          Mods on disk: {discovery?.mods.length ?? 0}
+          Steam beta: {discovery?.steamBetaBranch || '(public / none)'}
+          {'\n'}
+          Mods on disk: {discovery?.mods.length ?? 0} · Vault: {vaultCount}
+          {'\n'}
+          BLSE: {discovery?.blse.installed ? 'installed' : 'not found'}
         </div>
       </aside>
 
@@ -292,6 +494,9 @@ export default function App() {
               <div className="toolbar-group">
                 <button className="btn primary" disabled={busy} onClick={onActivate}>
                   Activate profile
+                </button>
+                <button className="btn primary" disabled={busy} onClick={onLaunch}>
+                  {launchLabel}
                 </button>
                 <button className="btn" disabled={busy} onClick={onRefreshFromDisk}>
                   Capture current
@@ -317,13 +522,19 @@ export default function App() {
             ) : null}
 
             <div className="toolbar-group">
-              {(['mods', 'settings', 'about'] as Tab[]).map((t) => (
+              {(['mods', 'stores', 'settings', 'about'] as Tab[]).map((t) => (
                 <button
                   key={t}
                   className={`btn ${tab === t ? 'primary' : 'ghost'}`}
                   onClick={() => setTab(t)}
                 >
-                  {t === 'mods' ? 'Mods' : t === 'settings' ? 'Paths & version' : 'How it works'}
+                  {t === 'mods'
+                    ? 'Mods'
+                    : t === 'stores'
+                      ? 'Mod stores'
+                      : t === 'settings'
+                        ? 'Paths & version'
+                        : 'How it works'}
                 </button>
               ))}
             </div>
@@ -332,8 +543,9 @@ export default function App() {
               <section className="panel">
                 <h2>Mod load order</h2>
                 <p className="sub">
-                  Order and enabled flags are written to LauncherData.xml on activate. Modules stay
-                  in the game folder; disabled mods remain installed but unchecked.
+                  Activate deploys this profile’s modules from the vault into Modules (junctions by
+                  default), parks other community mods, then writes LauncherData.xml. Vortex is
+                  ignored.
                 </p>
                 <div className="field" style={{ marginBottom: '0.75rem' }}>
                   <label htmlFor="filter">Filter</label>
@@ -389,6 +601,7 @@ export default function App() {
                             <div>{m.name}</div>
                             <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
                               {m.id}
+                              {m.source ? ` · ${m.source}` : ''}
                             </div>
                           </td>
                           <td>{m.version}</td>
@@ -400,12 +613,186 @@ export default function App() {
               </section>
             )}
 
+            {tab === 'stores' && (
+              <section className="panel">
+                <h2>Mod stores</h2>
+                <p className="sub">
+                  Search Steam Workshop, Nexus Mods, and ModDB. Keys live in encrypted app secrets
+                  (or env vars). Downloads that need Premium/manual steps open the browser.
+                </p>
+
+                <div className="toolbar-group" style={{ marginBottom: '0.75rem' }}>
+                  {(['nexus', 'steam', 'moddb'] as StoreKind[]).map((k) => (
+                    <button
+                      key={k}
+                      className={`btn ${storeKind === k ? 'primary' : 'ghost'}`}
+                      onClick={() => setStoreKind(k)}
+                    >
+                      {k === 'nexus' ? 'Nexus' : k === 'steam' ? 'Steam Workshop' : 'ModDB'}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="path-row" style={{ marginBottom: '0.75rem' }}>
+                  <input
+                    value={storeQuery}
+                    onChange={(e) => setStoreQuery(e.target.value)}
+                    placeholder={`Search ${storeKind}…`}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void onSearchStore()
+                    }}
+                  />
+                  <button className="btn primary" disabled={busy} onClick={onSearchStore}>
+                    Search
+                  </button>
+                  {storeManualUrl && (
+                    <button
+                      className="btn"
+                      onClick={() => window.bannerlord.openExternal(storeManualUrl)}
+                    >
+                      Open in browser
+                    </button>
+                  )}
+                </div>
+
+                <div className="toolbar-group" style={{ marginBottom: '0.75rem' }}>
+                  <button className="btn" disabled={busy} onClick={onImportZip}>
+                    Import ZIP → vault
+                  </button>
+                  <button className="btn" disabled={busy} onClick={onImportFolder}>
+                    Import folder → vault
+                  </button>
+                  <button className="btn" disabled={busy} onClick={onImportModulesToVault}>
+                    Vault current Modules
+                  </button>
+                </div>
+
+                {storeError && <div className="callout warn">{storeError}</div>}
+
+                <div className="store-results">
+                  {storeResults.map((r) => (
+                    <div key={`${r.store}-${r.id}`} className="store-card">
+                      <div>
+                        <strong>{r.name}</strong>
+                        <div className="meta">{r.summary || r.note}</div>
+                      </div>
+                      <div className="toolbar-group">
+                        <button
+                          className="btn"
+                          onClick={() => window.bannerlord.openExternal(r.url)}
+                        >
+                          Open
+                        </button>
+                        {r.store === 'steam' && (
+                          <>
+                            <button
+                              className="btn"
+                              disabled={busy}
+                              onClick={() =>
+                                withBusy(async () => {
+                                  await window.bannerlord.openSteamWorkshop(r.id)
+                                  setMessage({
+                                    kind: 'ok',
+                                    text: 'Opened in Steam. Subscribe, then Import Workshop.',
+                                  })
+                                })
+                              }
+                            >
+                              Steam subscribe
+                            </button>
+                            <button
+                              className="btn primary"
+                              disabled={busy || !selected}
+                              onClick={() =>
+                                withBusy(async () => {
+                                  const res = await window.bannerlord.importWorkshop(r.id)
+                                  if (!res.ok) throw new Error(res.error || 'Import failed')
+                                  await addImportedToProfile(
+                                    res.modules as Array<{
+                                      folderName: string
+                                      id: string
+                                      name: string
+                                      version: string
+                                    }>,
+                                    'steam',
+                                    r.id,
+                                  )
+                                  setMessage({
+                                    kind: 'ok',
+                                    text: `Imported workshop item ${r.id} into vault/profile.`,
+                                  })
+                                })
+                              }
+                            >
+                              Import Workshop
+                            </button>
+                          </>
+                        )}
+                        {r.store === 'nexus' && (
+                          <button
+                            className="btn primary"
+                            disabled={busy || !selected}
+                            onClick={() =>
+                              withBusy(async () => {
+                                const files = await window.bannerlord.listNexusFiles(r.id)
+                                if (!files.ok || !files.files.length) {
+                                  await window.bannerlord.openExternal(r.url)
+                                  throw new Error(
+                                    files.error ||
+                                      'Could not list files — opened Nexus page for manual download.',
+                                  )
+                                }
+                                const file = files.files[0]
+                                const dl = await window.bannerlord.downloadNexusFile(
+                                  r.id,
+                                  String(file.id),
+                                )
+                                if (!dl.ok) {
+                                  await window.bannerlord.openExternal(r.url)
+                                  throw new Error(
+                                    dl.error ||
+                                      'Nexus download unavailable — opened mod page (Premium often required).',
+                                  )
+                                }
+                                const modules =
+                                  (dl.imported?.modules as Array<{
+                                    folderName: string
+                                    id: string
+                                    name: string
+                                    version: string
+                                  }>) || []
+                                await addImportedToProfile(modules, 'nexus', r.id)
+                                setMessage({
+                                  kind: 'ok',
+                                  text: `Downloaded Nexus mod ${r.id} → vault/profile.`,
+                                })
+                              })
+                            }
+                          >
+                            Download / install
+                          </button>
+                        )}
+                        {r.store === 'moddb' && (
+                          <button
+                            className="btn"
+                            onClick={() => window.bannerlord.openExternal(r.url)}
+                          >
+                            Manual download
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {tab === 'settings' && (
               <section className="panel">
-                <h2>Paths & version</h2>
+                <h2>Paths, version & accounts</h2>
                 <p className="sub">
-                  Override auto-detected Steam/common paths when needed. Version is remembered per
-                  profile; Steam owns binary switches.
+                  Override paths, pin Steam beta/version, store API credentials, and BLSE launch
+                  preference.
                 </p>
 
                 <div className="grid-2">
@@ -423,12 +810,12 @@ export default function App() {
                     />
                   </div>
                   <div className="field">
-                    <label htmlFor="beta">Steam beta branch (optional)</label>
+                    <label htmlFor="beta">Steam BetaKey / branch</label>
                     <input
                       id="beta"
                       defaultValue={selected.steamBetaBranch}
                       key={`beta-${selected.id}-${selected.updatedAt}`}
-                      placeholder="e.g. beta, or leave blank for public"
+                      placeholder="e.g. v1.3.15 (matches Steam Betas)"
                       onBlur={(e) => {
                         if (e.target.value !== selected.steamBetaBranch) {
                           void saveProfileFields({ steamBetaBranch: e.target.value })
@@ -436,6 +823,78 @@ export default function App() {
                       }}
                     />
                   </div>
+                </div>
+
+                <div className="grid-2" style={{ marginTop: '0.9rem' }}>
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={selected.settings.requiresBlse}
+                      disabled={busy}
+                      onChange={(e) => {
+                        void saveProfileFields({
+                          settings: {
+                            ...selected.settings,
+                            requiresBlse: e.target.checked,
+                            preferredLauncher: e.target.checked ? 'blse' : 'steam',
+                          },
+                        })
+                      }}
+                    />
+                    Profile requires BLSE (Launch via BLSE)
+                  </label>
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={selected.settings.autoBackupLauncherData !== false}
+                      disabled={busy}
+                      onChange={(e) => {
+                        void saveProfileFields({
+                          settings: {
+                            ...selected.settings,
+                            autoBackupLauncherData: e.target.checked,
+                          },
+                        })
+                      }}
+                    />
+                    Backup LauncherData.xml before activate
+                  </label>
+                </div>
+
+                <div className="grid-2" style={{ marginTop: '0.5rem' }}>
+                  <div className="field">
+                    <label htmlFor="vaultMode">Vault deploy mode</label>
+                    <select
+                      id="vaultMode"
+                      value={selected.settings.vaultDeployMode}
+                      disabled={busy}
+                      onChange={(e) => {
+                        void saveProfileFields({
+                          settings: {
+                            ...selected.settings,
+                            vaultDeployMode: e.target.value as 'junction' | 'copy',
+                          },
+                        })
+                      }}
+                    >
+                      <option value="junction">Junction (fast)</option>
+                      <option value="copy">Full copy</option>
+                    </select>
+                  </div>
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={store.allowSteamBetaKeyWrite !== false}
+                      disabled={busy}
+                      onChange={(e) => {
+                        void withBusy(async () => {
+                          await window.bannerlord.setAllowSteamBetaKeyWrite(e.target.checked)
+                          await refresh()
+                        })
+                      }}
+                    />
+                    Allow Steam BetaKey write on confirmed version switch
+                  </label>
                 </div>
 
                 <div className="field" style={{ marginTop: '0.9rem' }}>
@@ -484,75 +943,173 @@ export default function App() {
                   />
                 </div>
 
-                <div className="grid-2" style={{ marginTop: '0.9rem' }}>
-                  <label className="check-row">
-                    <input
-                      type="checkbox"
-                      checked={selected.settings.autoBackupLauncherData !== false}
-                      disabled={busy}
-                      onChange={(e) => {
-                        void saveProfileFields({
-                          settings: {
-                            ...selected.settings,
-                            autoBackupLauncherData: e.target.checked,
-                          },
-                        })
-                      }}
-                    />
-                    Backup LauncherData.xml before activate
-                  </label>
-                  <div className="field">
-                    <label htmlFor="launcher">Preferred launcher (hint)</label>
-                    <select
-                      id="launcher"
-                      value={selected.settings.preferredLauncher}
-                      disabled={busy}
-                      onChange={(e) => {
-                        void saveProfileFields({
-                          settings: {
-                            ...selected.settings,
-                            preferredLauncher: e.target.value as
-                              | 'official'
-                              | 'blse'
-                              | 'steam',
-                          },
-                        })
-                      }}
-                    >
-                      <option value="official">Official launcher</option>
-                      <option value="blse">BLSE</option>
-                      <option value="steam">Steam</option>
-                    </select>
-                  </div>
+                <h2 style={{ marginTop: '1.25rem' }}>Store credentials</h2>
+                <p className="sub">
+                  Stored via Electron safeStorage when available. Env fallbacks:{' '}
+                  {secrets?.hooks.envNexus}, {secrets?.hooks.envSteam},{' '}
+                  {secrets?.hooks.envModdbUser}/{secrets?.hooks.envModdbPass}. Nexus SSO app id
+                  optional ({secrets?.hooks.envNexusAppId}) after Stephen registers the app on Nexus.
+                </p>
+                <div className="grid-2">
+                  <SecretField
+                    label={`Nexus API key ${secrets?.nexusApiKeySet ? '(set)' : '(missing)'}`}
+                    placeholder="Paste Nexus API key"
+                    onSave={(v) =>
+                      withBusy(async () => {
+                        setSecrets(await window.bannerlord.setSecrets({ nexusApiKey: v }))
+                      })
+                    }
+                  />
+                  <SecretField
+                    label={`Steam Web API key ${secrets?.steamWebApiKeySet ? '(set)' : '(missing)'}`}
+                    placeholder="Paste Steam Web API key"
+                    onSave={(v) =>
+                      withBusy(async () => {
+                        setSecrets(await window.bannerlord.setSecrets({ steamWebApiKey: v }))
+                      })
+                    }
+                  />
+                  <SecretField
+                    label={`ModDB username ${secrets?.moddbUsernameSet ? '(set)' : ''}`}
+                    placeholder="Optional ModDB username"
+                    onSave={(v) =>
+                      withBusy(async () => {
+                        setSecrets(await window.bannerlord.setSecrets({ moddbUsername: v }))
+                      })
+                    }
+                  />
+                  <SecretField
+                    label={`ModDB password ${secrets?.moddbPasswordSet ? '(set)' : ''}`}
+                    placeholder="Optional ModDB password"
+                    password
+                    onSave={(v) =>
+                      withBusy(async () => {
+                        setSecrets(await window.bannerlord.setSecrets({ moddbPassword: v }))
+                      })
+                    }
+                  />
                 </div>
-
-                <div style={{ marginTop: '0.9rem' }} className="callout">
-                  LauncherData: {discovery?.launcherDataPath ?? 'n/a'}
-                  {'\n'}
-                  Modules: {discovery?.modulesPath ?? 'n/a'}
-                  {'\n'}
-                  Steam beta now: {discovery?.steamBetaBranch || '(public / none)'}
+                <div className="toolbar-group" style={{ marginTop: '0.75rem' }}>
+                  <button
+                    className="btn"
+                    disabled={busy}
+                    onClick={() =>
+                      withBusy(async () => {
+                        const v = await window.bannerlord.validateNexus()
+                        setMessage({
+                          kind: v.ok ? 'ok' : 'error',
+                          text: v.ok
+                            ? `Nexus OK: ${v.name} (Premium: ${v.isPremium ? 'yes' : 'no'})`
+                            : v.error || 'Nexus validate failed',
+                        })
+                      })
+                    }
+                  >
+                    Validate Nexus key
+                  </button>
+                  <button
+                    className="btn ghost"
+                    onClick={async () => {
+                      const p = await window.bannerlord.getVaultPath()
+                      await window.bannerlord.showItemInFolder(p)
+                    }}
+                  >
+                    Open vault folder
+                  </button>
                 </div>
               </section>
             )}
 
             {tab === 'about' && (
               <section className="panel">
-                <h2>How profiles work</h2>
-                <p className="sub">Safe activation model for this first pass.</p>
+                <h2>How profiles work (this pass)</h2>
                 <div className="callout">
-                  {`1. Each profile stores: name, target game version, optional Steam beta branch, mod list (id/order/enabled), and notes.
-2. Activate writes Documents/Mount and Blade II Bannerlord/Configs/LauncherData.xml from the profile.
-3. A backup of the previous LauncherData is saved under the app userData/backups folder.
-4. A copy is also mirrored to Documents/.../Configs/ModProfiles/<profile name>/.
-5. Mods themselves stay in <Game>/Modules — this pass does not copy/delete module folders.
-6. Version switching: if the installed version mismatches the profile, the app warns and can open Steam. It does not rewrite Steam manifests by default.`}
+                  {`1. Each profile stores version/BetaKey, BLSE requirement, vaulted mod set, order, enabled flags.
+2. Activate parks non-profile community modules into the vault, deploys the profile set (junction/copy), writes LauncherData.xml.
+3. If the target game version differs, a modal asks to Continue (opt-in BetaKey write + validate) or Cancel (no changes).
+4. Launch uses BLSE when the profile requires it; otherwise Steam.
+5. Stores: Nexus (API key; Premium for CDN), Steam Workshop (Web API key + subscribe/import), ModDB (no official API — browser + ZIP import).
+6. Vortex is ignored entirely.`}
                 </div>
               </section>
             )}
           </>
         )}
       </main>
+
+      {versionModal && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h2>Version switch required</h2>
+            <p>
+              This profile requires version <strong>{versionModal.requiredVersion}</strong>,
+              switching now.
+            </p>
+            <p className="sub">
+              Current install reports {versionModal.currentVersion ?? 'unknown'}. Continue will
+              deactivate the current profile, activate this one (vault deploy + LauncherData), and
+              attempt a Steam BetaKey switch.
+            </p>
+            {dirtyCurrent && (
+              <div className="field" style={{ margin: '0.75rem 0' }}>
+                <label htmlFor="saveAs">
+                  Current profile “{activeProfile?.name}” has unsaved changes — save as:
+                </label>
+                <input
+                  id="saveAs"
+                  value={saveAsName}
+                  onChange={(e) => setSaveAsName(e.target.value)}
+                  placeholder="New profile name"
+                />
+              </div>
+            )}
+            <div className="toolbar-group">
+              <button className="btn primary" disabled={busy} onClick={onVersionContinue}>
+                Continue
+              </button>
+              <button className="btn" disabled={busy} onClick={onVersionCancel}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SecretField({
+  label,
+  placeholder,
+  password,
+  onSave,
+}: {
+  label: string
+  placeholder: string
+  password?: boolean
+  onSave: (value: string) => void
+}) {
+  const [value, setValue] = useState('')
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <div className="path-row">
+        <input
+          type={password ? 'password' : 'text'}
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <button
+          className="btn"
+          onClick={() => {
+            onSave(value)
+            setValue('')
+          }}
+        >
+          Save
+        </button>
+      </div>
     </div>
   )
 }

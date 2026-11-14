@@ -1,10 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  ActivateOptions,
   ActivateResult,
   AppStore,
   CreateProfileInput,
   GameDiscovery,
+  LaunchResult,
   ModProfile,
+  SecretsStatus,
+  StoreSearchResponse,
 } from './types'
 
 export interface BannerlordApi {
@@ -23,12 +27,56 @@ export interface BannerlordApi {
   setModEnabled: (id: string, modId: string, enabled: boolean) => Promise<ModProfile>
   syncModsFromDisk: (id: string) => Promise<{ profile: ModProfile; added: number }>
   duplicateProfile: (id: string, newName?: string) => Promise<ModProfile>
-  activateProfile: (id: string) => Promise<ActivateResult>
+  setDirty: (id: string, dirty: boolean) => Promise<ModProfile>
+  addModules: (
+    id: string,
+    modules: Array<{
+      folderName: string
+      id: string
+      name: string
+      version: string
+      source?: string
+      sourceId?: string
+    }>,
+    enabled?: boolean,
+  ) => Promise<ModProfile>
+  activateProfile: (id: string, options?: ActivateOptions) => Promise<ActivateResult>
+  launchProfile: (id: string) => Promise<LaunchResult>
   setPaths: (gameInstallPath: string | null, documentsPath: string | null) => Promise<AppStore>
+  setAllowSteamBetaKeyWrite: (allow: boolean) => Promise<AppStore>
   getDiscovery: () => Promise<GameDiscovery>
+  listVault: () => Promise<string[]>
+  importModulesToVault: () => Promise<{ imported: string[]; skipped: string[] }>
+  getVaultPath: () => Promise<string>
+  getSecretsStatus: () => Promise<SecretsStatus>
+  setSecrets: (patch: Record<string, string | undefined>) => Promise<SecretsStatus>
+  searchStore: (store: 'nexus' | 'steam' | 'moddb', query: string) => Promise<StoreSearchResponse>
+  validateNexus: () => Promise<{ ok: boolean; name?: string; isPremium?: boolean; error?: string }>
+  listNexusFiles: (
+    modId: string,
+  ) => Promise<{ ok: boolean; files: Array<{ id: number; name: string; version: string }>; error?: string }>
+  downloadNexusFile: (
+    modId: string,
+    fileId: string,
+  ) => Promise<{
+    ok: boolean
+    url?: string
+    error?: string
+    needsPremium?: boolean
+    imported?: { ok: boolean; modules: unknown[]; error?: string }
+  }>
+  openSteamWorkshop: (id: string) => Promise<void>
+  workshopInfo: () => Promise<{ path: string | null; note: string }>
+  importWorkshop: (
+    publishedFileId: string,
+  ) => Promise<{ ok: boolean; modules: unknown[]; error?: string }>
+  importZip: (zipPath: string) => Promise<{ ok: boolean; modules: unknown[]; error?: string }>
+  importFolder: (folderPath: string) => Promise<{ ok: boolean; modules: unknown[]; error?: string }>
   pickDirectory: (title: string) => Promise<string | null>
+  pickZip: () => Promise<string | null>
   openPath: (target: string) => Promise<string>
   showItemInFolder: (target: string) => Promise<void>
+  openExternal: (url: string) => Promise<void>
 }
 
 const api: BannerlordApi = {
@@ -45,13 +93,37 @@ const api: BannerlordApi = {
     ipcRenderer.invoke('profiles:setModEnabled', id, modId, enabled),
   syncModsFromDisk: (id) => ipcRenderer.invoke('profiles:syncModsFromDisk', id),
   duplicateProfile: (id, newName) => ipcRenderer.invoke('profiles:duplicate', id, newName),
-  activateProfile: (id) => ipcRenderer.invoke('profiles:activate', id),
+  setDirty: (id, dirty) => ipcRenderer.invoke('profiles:setDirty', id, dirty),
+  addModules: (id, modules, enabled) =>
+    ipcRenderer.invoke('profiles:addModules', id, modules, enabled),
+  activateProfile: (id, options) => ipcRenderer.invoke('profiles:activate', id, options),
+  launchProfile: (id) => ipcRenderer.invoke('profiles:launch', id),
   setPaths: (gameInstallPath, documentsPath) =>
     ipcRenderer.invoke('paths:set', gameInstallPath, documentsPath),
+  setAllowSteamBetaKeyWrite: (allow) =>
+    ipcRenderer.invoke('settings:setAllowSteamBetaKeyWrite', allow),
   getDiscovery: () => ipcRenderer.invoke('discovery:get'),
+  listVault: () => ipcRenderer.invoke('vault:list'),
+  importModulesToVault: () => ipcRenderer.invoke('vault:importModules'),
+  getVaultPath: () => ipcRenderer.invoke('vault:path'),
+  getSecretsStatus: () => ipcRenderer.invoke('secrets:status'),
+  setSecrets: (patch) => ipcRenderer.invoke('secrets:set', patch),
+  searchStore: (store, query) => ipcRenderer.invoke('stores:search', store, query),
+  validateNexus: () => ipcRenderer.invoke('stores:nexusValidate'),
+  listNexusFiles: (modId) => ipcRenderer.invoke('stores:nexusFiles', modId),
+  downloadNexusFile: (modId, fileId) =>
+    ipcRenderer.invoke('stores:nexusDownload', modId, fileId),
+  openSteamWorkshop: (id) => ipcRenderer.invoke('stores:steamOpen', id),
+  workshopInfo: () => ipcRenderer.invoke('stores:workshopInfo'),
+  importWorkshop: (publishedFileId) =>
+    ipcRenderer.invoke('stores:importWorkshop', publishedFileId),
+  importZip: (zipPath) => ipcRenderer.invoke('install:zip', zipPath),
+  importFolder: (folderPath) => ipcRenderer.invoke('install:folder', folderPath),
   pickDirectory: (title) => ipcRenderer.invoke('dialog:pickDirectory', title),
+  pickZip: () => ipcRenderer.invoke('dialog:pickZip'),
   openPath: (target) => ipcRenderer.invoke('shell:openPath', target),
   showItemInFolder: (target) => ipcRenderer.invoke('shell:showItem', target),
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 }
 
 contextBridge.exposeInMainWorld('bannerlord', api)

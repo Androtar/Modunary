@@ -1,7 +1,7 @@
 {
   "name": "bannerlord-mod-profiles",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Desktop app for Mount & Blade II: Bannerlord mod profiles",
   "author": "Stephen",
   "type": "module",

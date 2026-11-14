@@ -21,9 +21,23 @@ export function getBackupsPath(): string {
   return path.join(getAppDataRoot(), 'backups')
 }
 
+export function getVaultPath(): string {
+  return path.join(getAppDataRoot(), 'vault', 'modules')
+}
+
+export function getSecretsPath(): string {
+  return path.join(getAppDataRoot(), 'secrets.enc.json')
+}
+
+export function getSecretsPlainFallbackPath(): string {
+  // Only used when safeStorage unavailable; still gitignored via userData.
+  return path.join(getAppDataRoot(), 'secrets.local.json')
+}
+
 export function ensureAppDirs(): void {
   fs.mkdirSync(getAppDataRoot(), { recursive: true })
   fs.mkdirSync(getBackupsPath(), { recursive: true })
+  fs.mkdirSync(getVaultPath(), { recursive: true })
 }
 
 function readSteamPathFromRegistry(): string | null {
@@ -75,6 +89,22 @@ export function findSteamLibraries(): string[] {
   return [...roots]
 }
 
+export function findSteamExe(): string | null {
+  for (const lib of findSteamLibraries()) {
+    const exe = path.join(lib, 'steam.exe')
+    if (fs.existsSync(exe)) return exe
+    // library root may be steamapps parent
+    const parentExe = path.join(path.dirname(lib), 'steam.exe')
+    if (fs.existsSync(parentExe)) return parentExe
+  }
+  const reg = readSteamPathFromRegistry()
+  if (reg) {
+    const exe = path.join(reg, 'steam.exe')
+    if (fs.existsSync(exe)) return exe
+  }
+  return null
+}
+
 export function findBannerlordInstall(override?: string | null): string | null {
   if (override && fs.existsSync(override)) return override
 
@@ -85,7 +115,6 @@ export function findBannerlordInstall(override?: string | null): string | null {
     }
   }
 
-  // GOG / Xbox / manual common leftovers
   const extras = [
     'C:\\GOG Games\\Mount & Blade II Bannerlord',
     'D:\\GOG Games\\Mount & Blade II Bannerlord',
@@ -100,7 +129,7 @@ export function findBannerlordInstall(override?: string | null): string | null {
 export function defaultDocumentsPath(override?: string | null): string | null {
   if (override && fs.existsSync(override)) return override
   const docs = path.join(os.homedir(), 'Documents', DOCS_FOLDER)
-  return fs.existsSync(docs) ? docs : docs
+  return docs
 }
 
 export function launcherDataPath(documentsPath: string): string {
@@ -116,10 +145,21 @@ export function findSteamAppManifest(installPath: string | null): string | null 
   for (const lib of findSteamLibraries()) {
     const acf = path.join(lib, 'steamapps', `appmanifest_${STEAM_APP_ID}.acf`)
     if (fs.existsSync(acf)) return acf
-    // Heuristic: if install is under this library
-    if (installPath.toLowerCase().startsWith(path.join(lib, 'steamapps', 'common').toLowerCase())) {
+    if (
+      installPath
+        .toLowerCase()
+        .startsWith(path.join(lib, 'steamapps', 'common').toLowerCase())
+    ) {
       return fs.existsSync(acf) ? acf : null
     }
+  }
+  return null
+}
+
+export function findWorkshopContentPath(): string | null {
+  for (const lib of findSteamLibraries()) {
+    const p = path.join(lib, 'steamapps', 'workshop', 'content', STEAM_APP_ID)
+    if (fs.existsSync(p)) return p
   }
   return null
 }
@@ -137,6 +177,7 @@ export function resolvePaths(
     launcherDataPath: docs ? launcherDataPath(docs) : null,
     storePath: getStorePath(),
     backupsPath: getBackupsPath(),
+    vaultPath: getVaultPath(),
   }
 }
 
