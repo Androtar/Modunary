@@ -113,16 +113,19 @@ function tempBusy(steamapps: string): string | null {
  * - 4 = Fully Installed (idle) — never busy by itself
  * - Updating / validating usually set additional bits (1026, 1042, …) AND often
  *   BytesToDownload > 0 or a non-empty downloading folder
- * Do not treat every non-4 flag alone as busy without corroboration.
+ *
+ * IMPORTANT: Never treat StateFlags alone as busy. Steam often leaves stale
+ * updating/queued flags after a finished validate/update, which previously made
+ * Modunary sit on "Waiting for Steam…" forever.
  */
 function stateFlagsBusy(flags: number, corroborated: boolean): string | null {
   if (!Number.isFinite(flags) || flags === 0 || flags === 4) return null
+  if (!corroborated) return null
   const knownUpdating = new Set([6, 1026, 1030, 1042, 1062, 1538, 1542])
   if (knownUpdating.has(flags)) {
-    return `Steam StateFlags=${flags} (updating/validating/queued)`
+    return `Steam StateFlags=${flags} (updating/validating/queued, with download activity)`
   }
-  // Unknown non-idle flags: only busy when something else also says updating.
-  if ((flags & ~4) !== 0 && corroborated) {
+  if ((flags & ~4) !== 0) {
     return `Steam StateFlags=${flags} (with download activity)`
   }
   return null

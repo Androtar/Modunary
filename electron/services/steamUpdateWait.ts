@@ -8,7 +8,7 @@ function sleep(ms: number): Promise<void> {
 function betaMatches(current: string | null, desired: string): boolean {
   const a = (current || '').trim().toLowerCase()
   const b = desired.trim().toLowerCase()
-  if (!b) return !a || a === 'public' || a === 'none' || a === 'default'
+  if (!b) return !a || a === 'public' || a === 'none' || a === 'default' || a === 'beta'
   return a === b
 }
 
@@ -34,10 +34,11 @@ function versionRequired(desiredGameVersion: string): boolean {
  * After BetaKey write + validate, wait until Steam finishes installing/updating
  * and the installed game version matches the profile target.
  *
- * While Steam reports Bannerlord busy (download / update / validate), wait without
- * a short timeout — multi-GB version swaps can take a long time. A separate
- * false-start budget only applies when Steam never becomes busy and never lands
- * on the target version/BetaKey.
+ * Settle rule (primary): Steam idle + installed version matches target.
+ * BetaKey is best-effort — Steam often rewrites it to public/beta after update.
+ *
+ * While Steam is truly busy (download/staging activity), wait without a short
+ * timeout. Stale StateFlags alone must not keep us waiting forever.
  */
 export async function waitForSteamVersionSettle(input: {
   installPath: string | null
@@ -51,6 +52,11 @@ export async function waitForSteamVersionSettle(input: {
    */
   falseStartTimeoutMs?: number
   /**
+   * After Steam was busy then goes idle on the *wrong* version, give up.
+   * Default 8 minutes — long enough for package_info to refresh, not forever.
+   */
+  postUpdateMismatchTimeoutMs?: number
+  /**
    * Absolute ceiling even while Steam stays busy (safety net).
    * Default 8 hours — real installs should finish far sooner.
    */
@@ -62,19 +68,23 @@ export async function waitForSteamVersionSettle(input: {
   const notes: string[] = []
   const falseStartTimeoutMs =
     input.falseStartTimeoutMs ?? input.timeoutMs ?? 45 * 60 * 1000
+  const postUpdateMismatchTimeoutMs =
+    input.postUpdateMismatchTimeoutMs ?? 8 * 60 * 1000
   const absoluteTimeoutMs = input.absoluteTimeoutMs ?? 8 * 60 * 60 * 1000
   const pollMs = input.pollMs ?? 2000
   const started = Date.now()
   let lastBusyAt: number | null = null
   let sawBusy = false
+  let busyStreak = 0
   let idleStreak = 0
   let lastProgressAt = 0
+  let stableWrongVersion: string | null = null
+  let stableWrongSince = 0
 
   const needVersion = versionRequired(input.desiredGameVersion)
 
   const emitProgress = (message: string, force = false) => {
     const now = Date.now()
-    // Keep UI alive on long waits without spamming every 2s poll.
     if (!force && now - lastProgressAt < 4000) return
     lastProgressAt = now
     input.onProgress?.(message)
@@ -106,9 +116,14 @@ export async function waitForSteamVersionSettle(input: {
         compareLooseVersion(status.detectedVersion!, input.desiredGameVersion))
 
     if (status.busy) {
-      sawBusy = true
-      lastBusyAt = Date.now()
+      busyStreak += 1
+      // Require two consecutive busy polls so a one-shot stale flag cannot pin us.
+      if (busyStreak >= 2) {
+        sawBusy = true
+        lastBusyAt = Date.now()
+      }
       idleStreak = 0
+      stableWrongVersion = null
       emitProgress(
         `Installing version ${input.versionLabel}… ${status.detail} · elapsed ${formatElapsed(elapsed)} (waiting until Steam finishes)`,
       )
@@ -116,19 +131,26 @@ export async function waitForSteamVersionSettle(input: {
       continue
     }
 
-    // Steam idle: only succeed when BetaKey matches and (when known) version matches.
-    if (keyOk && versionOk) {
+    busyStreak = 0
+
+    // Primary settle: idle + version matches (BetaKey optional).
+    if (versionOk || (!needVersion && keyOk)) {
       idleStreak += 1
       if (idleStreak >= 2) {
+        if (needVersion && !keyOk) {
+          notes.push(
+            `Steam idle on version ${status.detectedVersion} (BetaKey=${status.betaKey || '(none)'}; wanted ${input.desiredBetaKey || '(public)'} — Steam often rewrites BetaKey after update).`,
+          )
+        }
         notes.push(
           sawBusy
             ? `Steam finished updating to ${input.versionLabel}.`
-            : `Steam reports idle with BetaKey matching ${input.desiredBetaKey || '(public)'} and version ${status.detectedVersion || input.desiredGameVersion}.`,
+            : `Steam reports idle with version ${status.detectedVersion || input.desiredGameVersion}.`,
         )
         return { ok: true, notes }
       }
       emitProgress(
-        `Waiting for Steam to settle on version ${input.versionLabel}… (${formatElapsed(elapsed)})`,
+        `Steam idle — confirming version ${input.versionLabel}… (${formatElapsed(elapsed)})`,
       )
       await sleep(pollMs)
       continue
@@ -136,27 +158,44 @@ export async function waitForSteamVersionSettle(input: {
 
     idleStreak = 0
 
-    // Idle but not on target yet — false-start / stalled clock only runs while not busy.
+    // Track stable wrong version while idle so we can fail clearly after Steam finishes.
+    const detected = status.detectedVersion || 'unknown'
+    if (stableWrongVersion !== detected) {
+      stableWrongVersion = detected
+      stableWrongSince = Date.now()
+    }
+
     const idleReference = lastBusyAt ?? started
     const idleFor = Date.now() - idleReference
-    if (idleFor >= falseStartTimeoutMs) {
-      const finalStatus = getSteamBusyStatus(input.installPath)
-      const reason = sawBusy
-        ? `Steam went idle but did not reach version ${input.versionLabel}`
-        : `Steam never started installing version ${input.versionLabel}`
+    const wrongFor = Date.now() - stableWrongSince
+
+    // After a real update cycle, don't spin forever on the wrong build.
+    if (
+      sawBusy &&
+      idleFor >= postUpdateMismatchTimeoutMs &&
+      wrongFor >= postUpdateMismatchTimeoutMs
+    ) {
       notes.push(
-        `${reason} after ${formatElapsed(idleFor)} idle (last: ${finalStatus.detail}, BetaKey=${finalStatus.betaKey || '(none)'}, version=${finalStatus.detectedVersion || 'unknown'}).`,
+        `Steam is idle but installed version is ${detected} (wanted ${input.versionLabel}); BetaKey=${status.betaKey || '(none)'} (wanted ${input.desiredBetaKey || '(public)'}). Activate aborted before touching Modules — pick a Steam beta that provides ${input.versionLabel}, or change the profile version to match the install.`,
       )
       return { ok: false, notes }
     }
 
-    if (!keyOk) {
-      emitProgress(
-        `Waiting for Steam BetaKey ${input.desiredBetaKey || '(public)'} to stick… (${formatElapsed(elapsed)}; large updates can take a long time)`,
+    // False start: never became busy and never reached target.
+    if (!sawBusy && idleFor >= falseStartTimeoutMs) {
+      notes.push(
+        `Steam never started installing version ${input.versionLabel} after ${formatElapsed(idleFor)} idle (last: ${status.detail}, BetaKey=${status.betaKey || '(none)'}, version=${detected}).`,
       )
-    } else if (needVersion) {
+      return { ok: false, notes }
+    }
+
+    if (needVersion) {
       emitProgress(
-        `Waiting for installed version ${input.versionLabel}… currently ${status.detectedVersion || 'unknown'} · ${formatElapsed(elapsed)}`,
+        `Steam idle — waiting for version ${input.versionLabel} (currently ${detected}; BetaKey=${status.betaKey || '(none)'}) · ${formatElapsed(elapsed)}`,
+      )
+    } else if (!keyOk) {
+      emitProgress(
+        `Waiting for Steam BetaKey ${input.desiredBetaKey || '(public)'} to stick… (${formatElapsed(elapsed)})`,
       )
     } else {
       emitProgress(

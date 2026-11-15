@@ -102,6 +102,13 @@ export function detectGameVersion(installPath: string | null): string | null {
 export function readSteamBetaBranch(manifestPath: string | null): string | null {
   if (!manifestPath || !fs.existsSync(manifestPath)) return null
   const text = fs.readFileSync(manifestPath, 'utf8')
+  // Prefer MountedConfig (what Steam actually has mounted) over UserConfig.
+  const mounted = text.match(
+    /"MountedConfig"\s*\{[\s\S]*?"BetaKey"\s+"([^"]*)"/i,
+  )
+  if (mounted) return mounted[1]
+  const user = text.match(/"UserConfig"\s*\{[\s\S]*?"BetaKey"\s+"([^"]*)"/i)
+  if (user) return user[1]
   const match = text.match(/"BetaKey"\s+"([^"]*)"/)
   return match ? match[1] : null
 }
