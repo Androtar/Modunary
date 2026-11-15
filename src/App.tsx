@@ -643,6 +643,19 @@ export default function App() {
     })
   }
 
+  /** Clear Unsaved: mod/load-order edits are already in store.json; Save marks the snapshot committed. */
+  async function onSaveDirtyProfile() {
+    if (!selected?.dirty) return
+    await withBusy(async () => {
+      await window.bannerlord.setDirty(selected.id, false)
+      await refresh()
+      setMessage({
+        kind: 'ok',
+        text: `Saved “${selected.name}” (Unsaved cleared). Activate when you want it on disk in Modules.`,
+      })
+    })
+  }
+
   async function pickGamePath() {
     const dir = await window.bannerlord.pickDirectory('Select Bannerlord install folder')
     if (!dir) return
@@ -1203,6 +1216,7 @@ export default function App() {
             <div className="toolbar">
               <div className="title-row">
                 <h2 style={{ margin: 0, fontFamily: 'var(--font-display)' }}>{selected.name}</h2>
+                {selected.dirty && <span className="badge dirty">Unsaved</span>}
                 <button
                   className="btn"
                   disabled={busy}
@@ -1216,9 +1230,22 @@ export default function App() {
                   Updated {new Date(selected.updatedAt).toLocaleString()}
                   {' · '}
                   Double-click a sidebar profile to rename
+                  {selected.dirty
+                    ? ' · Mod/load-order changes are Unsaved until you Save or Activate'
+                    : ''}
                 </div>
               </div>
               <div className="toolbar-group">
+                {selected.dirty && (
+                  <button
+                    className="btn primary"
+                    disabled={busy}
+                    title="Mark this profile’s current mod list as saved (clears Unsaved). Does not deploy to Modules — use Activate for that."
+                    onClick={() => void onSaveDirtyProfile()}
+                  >
+                    Save
+                  </button>
+                )}
                 <button
                   className="btn primary"
                   disabled={busy || activateLaunchBlocked}
