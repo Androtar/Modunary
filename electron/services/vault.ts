@@ -14,13 +14,129 @@ export function vaultModulePath(folderName: string): string {
   return path.join(getVaultPath(), folderName)
 }
 
-function rmrf(target: string): void {
-  if (!fs.existsSync(target)) return
-  fs.rmSync(target, { recursive: true, force: true })
+function isBannerlordRunning(): boolean {
+  try {
+    const out = execFileSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        "Get-Process -Name 'Bannerlord','Bannerlord.Native','TaleWorlds.MountAndBlade.Launcher','Bannerlord.BLSE.Launcher','Bannerlord.BLSE.LauncherEx' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName",
+      ],
+      { windowsHide: true, encoding: 'utf8', timeout: 4000 },
+    )
+    return out.trim().length > 0
+  } catch {
+    return false
+  }
 }
 
+function formatFsError(err: unknown, action: string, target: string): Error {
+  const raw = err instanceof Error ? err.message : String(err)
+  const code =
+    err && typeof err === 'object' && 'code' in err
+      ? String((err as { code?: string }).code || '')
+      : ''
+  const privilege =
+    /privilege is not held/i.test(raw) ||
+    code === 'EPERM' ||
+    /\b1314\b/.test(raw)
+  const busy =
+    /being used by another process|EBUSY|resource busy|locked/i.test(raw) ||
+    code === 'EBUSY' ||
+    code === 'EACCES'
+
+  if (privilege) {
+    return new Error(
+      `${action} failed for "${target}": Windows blocked creating a symbolic link (common with Vortex-deployed mods). Modunary now copies real files instead — if this persists, remove leftover symlinks under Modules or set vault deploy mode to Copy. Details: ${raw}`,
+    )
+  }
+  if (busy || isBannerlordRunning()) {
+    return new Error(
+      `${action} failed for "${target}": folder looks locked${isBannerlordRunning() ? ' (Bannerlord/launcher is running)' : ''}. Close Bannerlord and the launcher, then Activate again. Details: ${raw}`,
+    )
+  }
+  return new Error(`${action} failed for "${target}": ${raw}`)
+}
+
+function rmrf(target: string): void {
+  if (!fs.existsSync(target)) return
+  try {
+    fs.rmSync(target, { recursive: true, force: true })
+  } catch (err) {
+    throw formatFsError(err, 'Remove', target)
+  }
+}
+
+/**
+ * Copy a module tree into the vault (or Modules) while dereferencing symlinks.
+ * Vortex deploys mods as file symlinks into Modules; Node's fs.cpSync tries to
+ * recreate those symlinks and fails without SeCreateSymbolicLinkPrivilege.
+ * We always materialize real files/directories so vault deploy works without admin.
+ */
 function copyDir(src: string, dest: string): void {
-  fs.cpSync(src, dest, { recursive: true, force: true })
+  const walk = (from: string, to: string): void => {
+    let st: fs.Stats
+    try {
+      st = fs.lstatSync(from)
+    } catch (err) {
+      throw formatFsError(err, 'Read', from)
+    }
+
+    if (st.isSymbolicLink()) {
+      let targetStat: fs.Stats
+      try {
+        targetStat = fs.statSync(from) // follow
+      } catch (err) {
+        throw formatFsError(
+          err,
+          'Follow symlink',
+          `${from} (broken Vortex/Steam link?)`,
+        )
+      }
+      if (targetStat.isDirectory()) {
+        fs.mkdirSync(to, { recursive: true })
+        for (const name of fs.readdirSync(from)) {
+          walk(path.join(from, name), path.join(to, name))
+        }
+        return
+      }
+      fs.mkdirSync(path.dirname(to), { recursive: true })
+      try {
+        fs.copyFileSync(from, to) // reads through the symlink
+      } catch (err) {
+        throw formatFsError(err, 'Copy file', to)
+      }
+      return
+    }
+
+    if (st.isDirectory()) {
+      fs.mkdirSync(to, { recursive: true })
+      for (const name of fs.readdirSync(from)) {
+        walk(path.join(from, name), path.join(to, name))
+      }
+      return
+    }
+
+    if (st.isFile()) {
+      fs.mkdirSync(path.dirname(to), { recursive: true })
+      try {
+        fs.copyFileSync(from, to)
+      } catch (err) {
+        throw formatFsError(err, 'Copy file', to)
+      }
+      return
+    }
+
+    // Ignore sockets/FIFOs/etc.
+  }
+
+  try {
+    walk(src, dest)
+  } catch (err) {
+    if (err instanceof Error && /failed for/i.test(err.message)) throw err
+    throw formatFsError(err, 'Copy', dest)
+  }
 }
 
 function isJunctionOrSymlink(target: string): boolean {
@@ -30,6 +146,29 @@ function isJunctionOrSymlink(target: string): boolean {
   } catch {
     return false
   }
+}
+
+/** True when a module folder contains nested file/dir symlinks (Vortex-style). */
+function treeHasSymlinks(root: string, maxFiles = 80): boolean {
+  let seen = 0
+  const stack = [root]
+  while (stack.length && seen < maxFiles) {
+    const dir = stack.pop()!
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      seen += 1
+      const full = path.join(dir, entry.name)
+      if (entry.isSymbolicLink()) return true
+      if (entry.isDirectory()) stack.push(full)
+      if (seen >= maxFiles) break
+    }
+  }
+  return false
 }
 
 /** Ensure a module folder from Modules (or elsewhere) is stored in the vault. */
@@ -56,11 +195,20 @@ export function ensureInVault(sourceDir: string, folderName: string): string {
 }
 
 function createJunction(linkPath: string, targetPath: string): void {
-  // Windows directory junction — no admin required.
-  execFileSync('cmd', ['/c', 'mklink', '/J', linkPath, targetPath], {
-    windowsHide: true,
-    stdio: 'ignore',
-  })
+  // Windows directory junction — no admin required (unlike file symlinks).
+  try {
+    execFileSync(
+      'cmd',
+      ['/c', 'mklink', '/J', linkPath, targetPath],
+      { windowsHide: true, encoding: 'utf8' },
+    )
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `Could not create directory junction for "${linkPath}" → "${targetPath}". ` +
+        `Junctions normally work without admin; falling back to copy. (${detail})`,
+    )
+  }
 }
 
 export function deployFromVault(
@@ -86,7 +234,7 @@ export function deployFromVault(
       createJunction(dest, vaultDir)
       return
     } catch {
-      // Fallback to copy if junction fails (e.g. cross-volume issues are rare for junctions).
+      // Fallback to copy if junction fails.
     }
   }
   copyDir(vaultDir, dest)
@@ -102,8 +250,12 @@ export function parkModuleToVault(modulesDir: string, folderName: string): void 
   if (!fs.existsSync(src)) return
 
   if (isJunctionOrSymlink(src)) {
-    // Junction: vault already has content; just unlink.
-    fs.rmSync(src, { force: true })
+    // Junction/symlink at module root: vault already has content (or will via other path); just unlink.
+    try {
+      fs.rmSync(src, { force: true })
+    } catch (err) {
+      throw formatFsError(err, 'Unlink module', src)
+    }
     return
   }
 
@@ -137,6 +289,12 @@ export function deployProfileVault(
     throw new Error(`Modules directory missing: ${modulesDir}`)
   }
 
+  if (isBannerlordRunning()) {
+    throw new Error(
+      'Cannot Activate while Bannerlord or its launcher is running — close the game first so Modules folders are not locked.',
+    )
+  }
+
   const wantedFolders = new Set(
     profile.mods
       .filter((m) => !isOfficialModule(m.id) && !isOfficialModule(m.folderName))
@@ -145,15 +303,18 @@ export function deployProfileVault(
 
   // First: vault anything currently in Modules that we may park later.
   const existing = fs.readdirSync(modulesDir, { withFileTypes: true })
+  let vortexStyle = 0
   for (const entry of existing) {
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
     const folder = entry.name
     if (isOfficialModule(folder)) continue
     const full = path.join(modulesDir, folder)
     if (!fs.existsSync(path.join(full, 'SubModule.xml')) && !isJunctionOrSymlink(full)) {
-      continue
+      // Vortex may symlink only SubModule.xml — still a module if the link exists.
+      if (!treeHasSymlinks(full)) continue
     }
     try {
+      if (treeHasSymlinks(full)) vortexStyle += 1
       if (!isJunctionOrSymlink(full)) {
         ensureInVault(full, folder)
       }
@@ -162,6 +323,11 @@ export function deployProfileVault(
         `Could not vault "${folder}": ${err instanceof Error ? err.message : String(err)}`,
       )
     }
+  }
+  if (vortexStyle > 0) {
+    notes.push(
+      `Detected ${vortexStyle} Vortex-style symlink module(s) under Modules; copied real files into the vault (no admin symlink privilege required).`,
+    )
   }
 
   // Park mods not in this profile.
@@ -194,6 +360,11 @@ export function deployProfileVault(
       }
       if (!fs.existsSync(dest)) {
         deployFromVault(modulesDir, folder, mode)
+      } else if (!isJunctionOrSymlink(dest) && treeHasSymlinks(dest)) {
+        // Replace Vortex symlink forest with a vault junction/copy so the game sees real files
+        // and future activates do not re-hit symlink privilege errors.
+        rmrf(dest)
+        deployFromVault(modulesDir, folder, mode)
       }
       deployed.push(folder)
     } catch (err) {
@@ -211,21 +382,28 @@ export function deployProfileVault(
 }
 
 /** Snapshot current Modules community mods into the vault (without parking). */
-export function importModulesIntoVault(modulesDir: string): { imported: string[]; skipped: string[] } {
+export function importModulesIntoVault(modulesDir: string): {
+  imported: string[]
+  skipped: string[]
+  warnings: string[]
+} {
   ensureAppDirs()
   const imported: string[] = []
   const skipped: string[] = []
-  if (!fs.existsSync(modulesDir)) return { imported, skipped }
+  const warnings: string[] = []
+  if (!fs.existsSync(modulesDir)) return { imported, skipped, warnings }
 
   for (const entry of fs.readdirSync(modulesDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
     const folder = entry.name
     if (isOfficialModule(folder)) {
       skipped.push(folder)
       continue
     }
     const full = path.join(modulesDir, folder)
-    if (!fs.existsSync(path.join(full, 'SubModule.xml'))) {
+    const hasSub =
+      fs.existsSync(path.join(full, 'SubModule.xml')) || isJunctionOrSymlink(full)
+    if (!hasSub && !treeHasSymlinks(full)) {
       skipped.push(folder)
       continue
     }
@@ -233,10 +411,16 @@ export function importModulesIntoVault(modulesDir: string): { imported: string[]
       skipped.push(folder)
       continue
     }
-    ensureInVault(full, folder)
-    imported.push(folder)
+    try {
+      ensureInVault(full, folder)
+      imported.push(folder)
+    } catch (err) {
+      warnings.push(
+        `Import vault failed for "${folder}": ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
   }
-  return { imported, skipped }
+  return { imported, skipped, warnings }
 }
 
 export function listVaultModules(): string[] {

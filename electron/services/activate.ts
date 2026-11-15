@@ -224,6 +224,7 @@ export async function activateProfile(
           `Imported ${imported.imported.length} module folder(s) into vault before deploy.`,
         )
       }
+      warnings.push(...imported.warnings)
     }
 
     const vault = deployProfileVault(discovery.modulesPath, profileLive)
