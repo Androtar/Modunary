@@ -13,7 +13,11 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "electron:dev": "vite",
-    "start": "vite"
+    "start": "vite",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder --win",
+    "dist:nsis": "npm run build && electron-builder --win nsis",
+    "dist:portable": "npm run build && electron-builder --win portable"
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",

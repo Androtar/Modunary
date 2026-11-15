@@ -12,6 +12,9 @@ dist
 dist-electron
 dist-ssr
 release
+E:/Modunary/releases/
+build/icon-square.png
+tmp-*.json
 *.local
 .DS_Store
 

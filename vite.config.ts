@@ -3,6 +3,8 @@ import { defineConfig } from 'vite'
 import electron from 'vite-plugin-electron/simple'
 
 export default defineConfig({
+  // Relative asset URLs so file:// / loadFile works in the packaged app.
+  base: './',
   plugins: [
     react(),
     electron({

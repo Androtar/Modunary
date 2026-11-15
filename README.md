@@ -16,6 +16,21 @@ npm install
 npm run dev
 ```
 
+## Windows installer
+
+```powershell
+cd E:\BannerlordModApp
+npm install
+npm run dist
+```
+
+Produces under `release\`:
+
+- `Modunary-Setup-<version>.exe` — NSIS installer
+- `Modunary-<version>-portable.exe` — portable single-file exe
+
+Copy the `.exe` to `E:\Modunary\releases\` (or any folder you want) for an obvious install path.
+
 ## What works
 
 | Feature | Status |

@@ -1,0 +1,49 @@
+appId: com.androtar.modunary
+productName: Modunary
+copyright: Copyright © Stephen / Androtar
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+
+# Bundle portable 7za next to the app for archive extract in packaged builds.
+extraResources:
+  - from: node_modules/7zip-bin/win/x64/7za.exe
+    to: 7za.exe
+
+asar: true
+asarUnpack:
+  - '**/node_modules/7zip-bin/**'
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: ${productName}-Setup-${version}-${arch}.${ext}
+  # Unsigned local builds (no code-signing cert on this machine).
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Modunary
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  artifactName: ${productName}-Setup-${version}.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}
