@@ -181,8 +181,10 @@ export async function activateProfile(
         })
         versionNotes.push(...settle.notes)
         if (!settle.ok) {
+          const detail = settle.notes.filter(Boolean).slice(-2).join(' ')
           throw new Error(
-            `Steam did not finish installing version ${versionLabel}. Activate aborted before touching Modules — let Steam finish (or cancel) the update, then Activate again when Steam is idle.`,
+            detail ||
+              `Steam did not finish installing version ${versionLabel}. Activate aborted before touching Modules — let Steam finish (or cancel) the update, then Activate again when Steam is idle.`,
           )
         }
         steamVersionSwitchOk = steamVersionSwitchOk && settle.ok
