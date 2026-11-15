@@ -178,7 +178,7 @@ export async function activateProfile(
         versionNotes.push(...settle.notes)
         if (!settle.ok) {
           throw new Error(
-            `Steam did not finish installing version ${versionLabel} in time. Activate aborted before touching Modules — retry when Steam is idle.`,
+            `Steam did not finish installing version ${versionLabel}. Activate aborted before touching Modules — let Steam finish (or cancel) the update, then Activate again when Steam is idle.`,
           )
         }
         steamVersionSwitchOk = steamVersionSwitchOk && settle.ok

@@ -2188,7 +2188,7 @@ export default function App() {
                     [
                       ['saving', 'Saving current profile…'],
                       ['installing-version', `Installing version ${versionModal.requiredVersion.replace(/^v/i, '')}…`],
-                      ['waiting-steam', 'Waiting for Steam to finish…'],
+                      ['waiting-steam', 'Waiting for Steam to finish… (large updates can take a long time)'],
                       ['activating-mods', 'Activating mods…'],
                       ['writing-launcher', 'Writing launcher data…'],
                       ['done', 'Done'],
