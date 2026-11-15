@@ -4,6 +4,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { AppPaths } from '../types'
+import {
+  getConfiguredVaultRoot,
+  resolveDefaultVaultRoot,
+  vaultModulesDir,
+} from './vaultConfig'
 
 const STEAM_APP_ID = '261550'
 const GAME_FOLDER = 'Mount & Blade II Bannerlord'
@@ -21,8 +26,25 @@ export function getBackupsPath(): string {
   return path.join(getAppDataRoot(), 'backups')
 }
 
-export function getVaultPath(): string {
+/** Legacy AppData modules dir (pre E:\Modunary layout). */
+export function getLegacyVaultModulesPath(): string {
   return path.join(getAppDataRoot(), 'vault', 'modules')
+}
+
+/**
+ * User-facing vault root. Layout:
+ *   {vaultRoot}\modules\<ModFolder>\...
+ * Default: E:\Modunary when E: exists, else %APPDATA%\modunary\vault
+ */
+export function getVaultRoot(): string {
+  const configured = getConfiguredVaultRoot()
+  if (configured) return configured
+  return resolveDefaultVaultRoot(path.join(getAppDataRoot(), 'vault'))
+}
+
+/** Directory that holds module folders (…\modules). */
+export function getVaultPath(): string {
+  return vaultModulesDir(getVaultRoot())
 }
 
 export function getSecretsPath(): string {

@@ -20,7 +20,12 @@ import {
   importZipToVault,
 } from './services/installMod'
 import { launchProfile } from './services/launch'
-import { ensureAppDirs, findWorkshopContentPath, getVaultPath } from './services/paths'
+import {
+  ensureAppDirs,
+  findWorkshopContentPath,
+  getVaultPath,
+  getVaultRoot,
+} from './services/paths'
 import {
   addModulesToProfile,
   createProfile,
@@ -28,6 +33,7 @@ import {
   duplicateProfile,
   getStoreSnapshot,
   listProfiles,
+  loadStore,
   refreshProfileFromDisk,
   renameProfile,
   reorderMods,
@@ -35,6 +41,7 @@ import {
   setAllowSteamBetaKeyWrite,
   setShowNexusBrowserDuringCollection,
   setCollectionDownloadsPath,
+  setVaultPath,
   setModEnabled,
   setPaths,
   setProfileDirty,
@@ -42,6 +49,8 @@ import {
   undoLoadOrder,
   updateProfile,
 } from './services/profiles'
+import { migrateLegacyVaultIfNeeded } from './services/vaultMigrate'
+import { DEFAULT_VAULT_ROOT } from './services/vaultConfig'
 import { listSteamBannerlordVersions } from './services/steamVersions'
 import { getSecretsStatus, setSecrets } from './services/secrets'
 import { searchModdb } from './services/stores/moddb'
@@ -491,8 +500,24 @@ function registerIpc() {
     }),
   )
   ipcMain.handle(
+    'settings:setVaultPath',
+    wrapIpc('settings:setVaultPath', async (_e, dir: string | null) => {
+      const next = setVaultPath(dir)
+      const migrate = await migrateLegacyVaultIfNeeded()
+      return { store: next, migrate }
+    }),
+  )
+  ipcMain.handle(
+    'settings:getDefaultVaultPath',
+    wrapIpc('settings:getDefaultVaultPath', () => DEFAULT_VAULT_ROOT),
+  )
+  ipcMain.handle(
     'settings:getDefaultDownloadsPath',
     wrapIpc('settings:getDefaultDownloadsPath', () => getDefaultDownloadsPath()),
+  )
+  ipcMain.handle(
+    'vault:root',
+    wrapIpc('vault:root', () => getVaultRoot()),
   )
   ipcMain.handle(
     'discovery:get',
@@ -507,7 +532,7 @@ function registerIpc() {
   )
   ipcMain.handle(
     'vault:importModules',
-    wrapIpc('vault:importModules', () => {
+    wrapIpc('vault:importModules', async () => {
       const store = getStoreSnapshot()
       const discovery = discoverGame(store.gameInstallPath, store.documentsPath)
       if (!discovery.modulesPath) throw new Error('Modules path not found.')
@@ -674,8 +699,20 @@ function registerIpc() {
 // Must run before ready so userData / app name stick.
 migrateUserDataIfNeeded()
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Load store so vaultPath is applied before ensureAppDirs.
+  const store = loadStore()
+  const legacyHint = path.join(app.getPath('userData'), 'vault').toLowerCase()
+  const current = (store.vaultPath || '').toLowerCase()
+  if (fs.existsSync('E:\\') && (!current || current === legacyHint || current.includes('\\modunary\\vault'))) {
+    setVaultPath(DEFAULT_VAULT_ROOT)
+  }
   ensureAppDirs()
+  try {
+    await migrateLegacyVaultIfNeeded()
+  } catch (err) {
+    console.warn('[vault migrate]', err)
+  }
   // Persist Nexus cookies + route in-app browser downloads to ~/Downloads.
   ensureNexusSessionConfigured()
   registerIpc()

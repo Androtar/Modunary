@@ -226,12 +226,12 @@ function installBlseOverlay(extractedRoot: string): { ok: boolean; error?: strin
   return { ok: true }
 }
 
-function vaultRoots(roots: string[]): ImportedModule[] {
+async function vaultRoots(roots: string[]): Promise<ImportedModule[]> {
   const modules: ImportedModule[] = []
   for (const root of roots) {
     const meta = parseSubModuleXml(path.join(root, 'SubModule.xml'))
     const folderName = path.basename(root)
-    ensureInVault(root, folderName)
+    await ensureInVault(root, folderName)
     modules.push({
       folderName,
       id: meta?.id || folderName,
@@ -274,7 +274,7 @@ export async function importZipToVault(
     const roots = findModuleRoots(tmp)
     if (roots.length > 0) {
       options?.onProgress?.({ step: 'import', percent: 85, detail: 'Copying into vault…' })
-      const modules = vaultRoots(roots)
+      const modules = await vaultRoots(roots)
       options?.onProgress?.({ step: 'import', percent: 100, detail: 'Import complete' })
       return { ok: true, modules, kind: 'module', extractor }
     }
@@ -319,7 +319,7 @@ export async function importFolderToVault(folderPath: string): Promise<{
   if (roots.length === 0) {
     return { ok: false, modules: [], error: 'No SubModule.xml found in folder.' }
   }
-  return { ok: true, modules: vaultRoots(roots) }
+  return { ok: true, modules: await vaultRoots(roots) }
 }
 
 export async function downloadUrlToVault(
@@ -358,11 +358,11 @@ export async function downloadUrlToVault(
   }
 }
 
-export function importWorkshopFolder(workshopItemDir: string): {
+export async function importWorkshopFolder(workshopItemDir: string): Promise<{
   ok: boolean
   modules: ImportedModule[]
   error?: string
-} {
+}> {
   if (!fs.existsSync(workshopItemDir)) {
     return {
       ok: false,
@@ -374,7 +374,7 @@ export function importWorkshopFolder(workshopItemDir: string): {
     if (!fs.existsSync(c)) continue
     const roots = findModuleRoots(c)
     if (roots.length === 0) continue
-    return { ok: true, modules: vaultRoots(roots) }
+    return { ok: true, modules: await vaultRoots(roots) }
   }
   return { ok: false, modules: [], error: 'No SubModule.xml under workshop item.' }
 }

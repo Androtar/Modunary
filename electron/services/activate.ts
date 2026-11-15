@@ -217,8 +217,14 @@ export async function activateProfile(
       message: 'Activating mods…',
     })
 
+    const vaultProgress = (message: string) =>
+      report(onProgress, { phase: 'activating-mods', message })
+
     if (discovery.modulesPath) {
-      const imported = importModulesIntoVault(discovery.modulesPath)
+      const imported = await importModulesIntoVault(
+        discovery.modulesPath,
+        vaultProgress,
+      )
       if (imported.imported.length) {
         vaultNotes.push(
           `Imported ${imported.imported.length} module folder(s) into vault before deploy.`,
@@ -227,7 +233,11 @@ export async function activateProfile(
       warnings.push(...imported.warnings)
     }
 
-    const vault = deployProfileVault(discovery.modulesPath, profileLive)
+    const vault = await deployProfileVault(
+      discovery.modulesPath,
+      profileLive,
+      vaultProgress,
+    )
     vaultNotes.push(...vault.notes)
     warnings.push(...vault.warnings)
 

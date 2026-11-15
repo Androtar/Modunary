@@ -218,6 +218,11 @@ export interface AppStore {
    * null/empty = user Downloads (`~/Downloads`).
    */
   collectionDownloadsPath: string | null
+  /**
+   * Vault root directory. Module folders live in `{vaultPath}\modules\`.
+   * null/empty = default `E:\Modunary` when E: exists, else `%APPDATA%\modunary\vault`.
+   */
+  vaultPath: string | null
 }
 
 export interface ActivateOptions {
@@ -343,4 +348,5 @@ export const EMPTY_STORE: AppStore = {
   allowSteamBetaKeyWrite: true,
   showNexusBrowserDuringCollection: false,
   collectionDownloadsPath: null,
+  vaultPath: null,
 }

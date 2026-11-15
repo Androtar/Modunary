@@ -64,11 +64,17 @@ export interface BannerlordApi {
   setAllowSteamBetaKeyWrite: (allow: boolean) => Promise<AppStore>
   setShowNexusBrowserDuringCollection: (show: boolean) => Promise<AppStore>
   setCollectionDownloadsPath: (dir: string | null) => Promise<AppStore>
+  setVaultPath: (dir: string | null) => Promise<{
+    store: AppStore
+    migrate: { migrated: boolean; skipped: boolean; notes: string[]; from: string | null; to: string }
+  }>
+  getDefaultVaultPath: () => Promise<string>
   getDefaultDownloadsPath: () => Promise<string>
   getDiscovery: () => Promise<GameDiscovery>
   listVault: () => Promise<string[]>
-  importModulesToVault: () => Promise<{ imported: string[]; skipped: string[] }>
+  importModulesToVault: () => Promise<{ imported: string[]; skipped: string[]; warnings?: string[] }>
   getVaultPath: () => Promise<string>
+  getVaultRoot: () => Promise<string>
   getSecretsStatus: () => Promise<SecretsStatus>
   setSecrets: (patch: Record<string, string | undefined>) => Promise<SecretsStatus>
   searchStore: (store: 'nexus' | 'steam' | 'moddb', query: string) => Promise<StoreSearchResponse>
@@ -173,11 +179,18 @@ const api: BannerlordApi = {
     ipcRenderer.invoke('settings:setShowNexusBrowserDuringCollection', show),
   setCollectionDownloadsPath: (dir) =>
     ipcRenderer.invoke('settings:setCollectionDownloadsPath', dir),
+  setVaultPath: (dir: string | null) =>
+    ipcRenderer.invoke('settings:setVaultPath', dir) as Promise<{
+      store: AppStore
+      migrate: { migrated: boolean; skipped: boolean; notes: string[]; from: string | null; to: string }
+    }>,
+  getDefaultVaultPath: () => ipcRenderer.invoke('settings:getDefaultVaultPath') as Promise<string>,
   getDefaultDownloadsPath: () => ipcRenderer.invoke('settings:getDefaultDownloadsPath'),
   getDiscovery: () => ipcRenderer.invoke('discovery:get'),
   listVault: () => ipcRenderer.invoke('vault:list'),
   importModulesToVault: () => ipcRenderer.invoke('vault:importModules'),
   getVaultPath: () => ipcRenderer.invoke('vault:path'),
+  getVaultRoot: () => ipcRenderer.invoke('vault:root') as Promise<string>,
   getSecretsStatus: () => ipcRenderer.invoke('secrets:status'),
   setSecrets: (patch) => ipcRenderer.invoke('secrets:set', patch),
   searchStore: (store, query) => ipcRenderer.invoke('stores:search', store, query),

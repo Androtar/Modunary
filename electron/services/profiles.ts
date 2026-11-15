@@ -14,7 +14,14 @@ import {
   modsFromLauncherData,
   readLauncherData,
 } from './launcherData'
-import { ensureAppDirs, getStorePath, getVaultPath, resolvePaths } from './paths'
+import {
+  ensureAppDirs,
+  getStorePath,
+  getVaultPath,
+  getVaultRoot,
+  resolvePaths,
+} from './paths'
+import { setConfiguredVaultRoot } from './vaultConfig'
 import { listVaultModules } from './vault'
 
 function nowIso(): string {
@@ -42,11 +49,34 @@ function migrateProfile(raw: ModProfile): ModProfile {
   }
 }
 
+function applyVaultRootFromStore(store: AppStore): void {
+  setConfiguredVaultRoot(store.vaultPath)
+}
+
+function peekVaultPathFromDisk(): string | null {
+  try {
+    const storePath = getStorePath()
+    if (!fs.existsSync(storePath)) return null
+    const raw = JSON.parse(fs.readFileSync(storePath, 'utf8')) as Partial<AppStore>
+    if (typeof raw.vaultPath === 'string' && raw.vaultPath.trim()) return raw.vaultPath.trim()
+  } catch {
+    // ignore
+  }
+  return null
+}
+
 export function loadStore(): AppStore {
+  // Apply vault root before ensureAppDirs so we don't recreate the old AppData vault.
+  const peeked = peekVaultPathFromDisk()
+  setConfiguredVaultRoot(peeked)
+  if (!peeked) setConfiguredVaultRoot(getVaultRoot())
   ensureAppDirs()
   const storePath = getStorePath()
   if (!fs.existsSync(storePath)) {
     const store = { ...EMPTY_STORE }
+    // Default vault to E:\Modunary when available (persisted so Settings shows it).
+    store.vaultPath = getVaultRoot()
+    applyVaultRootFromStore(store)
     saveStore(store)
     return store
   }
@@ -55,7 +85,7 @@ export function loadStore(): AppStore {
     const profiles = Array.isArray(raw.profiles)
       ? raw.profiles.map((p) => migrateProfile(p as ModProfile))
       : []
-    return {
+    const store: AppStore = {
       ...EMPTY_STORE,
       ...raw,
       version: 2,
@@ -66,7 +96,16 @@ export function loadStore(): AppStore {
         typeof raw.collectionDownloadsPath === 'string' && raw.collectionDownloadsPath.trim()
           ? raw.collectionDownloadsPath.trim()
           : null,
+      vaultPath:
+        typeof raw.vaultPath === 'string' && raw.vaultPath.trim()
+          ? raw.vaultPath.trim()
+          : null,
     }
+    if (!store.vaultPath) {
+      store.vaultPath = getVaultRoot()
+    }
+    applyVaultRootFromStore(store)
+    return store
   } catch {
     const bak = `${storePath}.corrupt-${Date.now()}.json`
     fs.copyFileSync(storePath, bak)
@@ -429,6 +468,16 @@ export function setCollectionDownloadsPath(dir: string | null): AppStore {
   const store = loadStore()
   const trimmed = typeof dir === 'string' ? dir.trim() : ''
   store.collectionDownloadsPath = trimmed ? trimmed : null
+  saveStore(store)
+  return store
+}
+
+export function setVaultPath(dir: string | null): AppStore {
+  const store = loadStore()
+  const trimmed = typeof dir === 'string' ? dir.trim() : ''
+  store.vaultPath = trimmed ? trimmed : getVaultRoot()
+  applyVaultRootFromStore(store)
+  ensureAppDirs()
   saveStore(store)
   return store
 }

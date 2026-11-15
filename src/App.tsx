@@ -2000,6 +2000,62 @@ export default function App() {
                 </div>
 
                 <div className="field" style={{ marginTop: '0.75rem' }}>
+                  <label>Mod vault folder</label>
+                  <p className="sub" style={{ marginTop: 0 }}>
+                    Root for parked/deployed mods. Module folders live in{' '}
+                    <code>modules\</code> under this path. Default is{' '}
+                    <code>E:\Modunary</code> (keeps multi‑GB vaults off C: AppData).
+                  </p>
+                  <div className="path-row">
+                    <input
+                      readOnly
+                      value={store.vaultPath?.trim() || 'E:\\Modunary'}
+                    />
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => {
+                        void withBusy(async () => {
+                          const dir = await window.bannerlord.pickDirectory(
+                            'Select Modunary vault folder',
+                          )
+                          if (!dir) return
+                          const result = await window.bannerlord.setVaultPath(dir)
+                          await refresh()
+                          if (result.migrate.notes.length) {
+                            setMessage({
+                              kind: 'ok',
+                              text: result.migrate.notes.join(' '),
+                            })
+                          }
+                        })
+                      }}
+                    >
+                      Browse
+                    </button>
+                    <button
+                      className="btn ghost"
+                      disabled={busy}
+                      onClick={() => {
+                        void withBusy(async () => {
+                          const def = await window.bannerlord.getDefaultVaultPath()
+                          const result = await window.bannerlord.setVaultPath(def)
+                          await refresh()
+                          if (result.migrate.notes.length) {
+                            setMessage({
+                              kind: 'ok',
+                              text: result.migrate.notes.join(' '),
+                            })
+                          }
+                        })
+                      }}
+                    >
+                      E:\Modunary
+                    </button>
+                  </div>
+                </div>
+
+                <div className="field" style={{ marginTop: '0.75rem' }}>
                   <label htmlFor="notes">Notes</label>
                   <textarea
                     id="notes"
