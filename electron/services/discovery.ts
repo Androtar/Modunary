@@ -79,24 +79,58 @@ export function discoverMods(modulesDir: string): DiscoveredMod[] {
   return mods.sort((a, b) => a.name.localeCompare(b.name))
 }
 
+function normalizeVersion(v: string): string {
+  return v.replace(/^v/i, '').split('.').slice(0, 3).join('.')
+}
+
+function versionTuple(v: string): number[] {
+  return normalizeVersion(v)
+    .split('.')
+    .map((p) => Number.parseInt(p, 10) || 0)
+}
+
+/** Return true if a is strictly newer than b (loose semver major.minor.patch). */
+function isNewerVersion(a: string, b: string): boolean {
+  const aa = versionTuple(a)
+  const bb = versionTuple(b)
+  for (let i = 0; i < 3; i += 1) {
+    const x = aa[i] ?? 0
+    const y = bb[i] ?? 0
+    if (x !== y) return x > y
+  }
+  return false
+}
+
+/**
+ * Detect installed Bannerlord version.
+ * After Steam validate/beta switch, package_info.txt often lags while
+ * Modules/Native/SubModule.xml already reflects the new build — prefer the
+ * newer of the two so Activate settle does not hang on a stale 1.3.x string.
+ */
 export function detectGameVersion(installPath: string | null): string | null {
   if (!installPath) return null
 
+  let fromPackage: string | null = null
   const packageInfo = path.join(installPath, 'package_info.txt')
   if (fs.existsSync(packageInfo)) {
     const text = fs.readFileSync(packageInfo, 'utf8')
     const env = text.match(/Environment:\s*PC@v([\d.]+)/i)
-    if (env) return env[1]
+    if (env) fromPackage = normalizeVersion(env[1])
   }
 
+  let fromNative: string | null = null
   const nativeSub = path.join(installPath, 'Modules', 'Native', 'SubModule.xml')
   if (fs.existsSync(nativeSub)) {
     const meta = parseSubModuleXml(nativeSub)
-    if (meta?.version) {
-      return meta.version.replace(/^v/i, '').split('.').slice(0, 3).join('.')
-    }
+    if (meta?.version) fromNative = normalizeVersion(meta.version)
   }
-  return null
+
+  if (fromPackage && fromNative) {
+    if (fromPackage === fromNative) return fromPackage
+    // Prefer the newer signal — typically Native after a finished Steam update/validate.
+    return isNewerVersion(fromNative, fromPackage) ? fromNative : fromPackage
+  }
+  return fromNative || fromPackage
 }
 
 export function readSteamBetaBranch(manifestPath: string | null): string | null {

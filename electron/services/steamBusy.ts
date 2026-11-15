@@ -81,21 +81,37 @@ function downloadingBusy(steamapps: string): {
   return { reason: null, emptyLeftover: false }
 }
 
-function tempBusy(steamapps: string): string | null {
+function tempBusy(steamapps: string): {
+  reason: string | null
+  emptyLeftover: boolean
+} {
+  let emptyLeftover = false
   for (const rel of ['temp', 'workshop\\downloads']) {
     const root = path.join(steamapps, ...rel.split('\\'))
     if (!fs.existsSync(root)) continue
     try {
       for (const name of fs.readdirSync(root)) {
-        if (!(name.includes(STEAM_APP_ID) || name.toLowerCase().includes('bannerlord'))) continue
+        if (!(name.includes(STEAM_APP_ID) || name.toLowerCase().includes('bannerlord'))) {
+          continue
+        }
         const full = path.join(root, name)
         try {
           const st = fs.statSync(full)
           if (st.isFile() && st.size > 0) {
-            return `Steam temp/workshop download activity (${rel}/${name})`
+            return {
+              reason: `Steam temp/workshop download activity (${rel}/${name})`,
+              emptyLeftover: false,
+            }
           }
-          if (st.isDirectory() && dirHasFiles(full)) {
-            return `Steam temp/workshop download activity (${rel}/${name})`
+          if (st.isDirectory()) {
+            if (dirHasFiles(full)) {
+              return {
+                reason: `Steam temp/workshop download activity (${rel}/${name})`,
+                emptyLeftover: false,
+              }
+            }
+            // Steam leaves empty temp/261550 dirs after validate — not busy.
+            emptyLeftover = true
           }
         } catch {
           // ignore
@@ -105,7 +121,7 @@ function tempBusy(steamapps: string): string | null {
       // ignore
     }
   }
-  return null
+  return { reason: null, emptyLeftover }
 }
 
 /**
@@ -205,7 +221,8 @@ export function getSteamBusyStatus(installPath?: string | null): SteamBusyStatus
   if (dl.emptyLeftover) emptyLeftover = true
 
   const tmp = tempBusy(steamapps)
-  if (tmp) reasons.push(tmp)
+  if (tmp.reason) reasons.push(tmp.reason)
+  if (tmp.emptyLeftover) emptyLeftover = true
 
   let bytesDownloading = false
   let flags = 4
@@ -242,7 +259,7 @@ export function getSteamBusyStatus(installPath?: string | null): SteamBusyStatus
   const detailParts = [
     busy ? reasons.join('; ') : 'Steam idle',
     `StateFlags=${flags}`,
-    emptyLeftover ? 'empty downloading/261550 leftover ignored' : null,
+    emptyLeftover ? 'empty Steam download/temp leftover ignored' : null,
   ].filter(Boolean)
   return {
     busy,

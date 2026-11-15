@@ -53,7 +53,7 @@ export async function waitForSteamVersionSettle(input: {
   falseStartTimeoutMs?: number
   /**
    * After Steam was busy then goes idle on the *wrong* version, give up.
-   * Default 8 minutes — long enough for package_info to refresh, not forever.
+   * Default 2 minutes once fully idle — validate leftovers should not hang Activate.
    */
   postUpdateMismatchTimeoutMs?: number
   /**
@@ -69,7 +69,7 @@ export async function waitForSteamVersionSettle(input: {
   const falseStartTimeoutMs =
     input.falseStartTimeoutMs ?? input.timeoutMs ?? 45 * 60 * 1000
   const postUpdateMismatchTimeoutMs =
-    input.postUpdateMismatchTimeoutMs ?? 8 * 60 * 1000
+    input.postUpdateMismatchTimeoutMs ?? 2 * 60 * 1000
   const absoluteTimeoutMs = input.absoluteTimeoutMs ?? 8 * 60 * 60 * 1000
   const pollMs = input.pollMs ?? 2000
   const started = Date.now()
@@ -169,9 +169,11 @@ export async function waitForSteamVersionSettle(input: {
     const idleFor = Date.now() - idleReference
     const wrongFor = Date.now() - stableWrongSince
 
-    // After a real update cycle, don't spin forever on the wrong build.
+    // Idle on a stable wrong build — fail fast. Validate often finishes before
+    // Activate starts watching, so do not require sawBusy (that used to hang
+    // for falseStartTimeoutMs after Steam was already done).
     if (
-      sawBusy &&
+      detected !== 'unknown' &&
       idleFor >= postUpdateMismatchTimeoutMs &&
       wrongFor >= postUpdateMismatchTimeoutMs
     ) {
@@ -181,7 +183,7 @@ export async function waitForSteamVersionSettle(input: {
       return { ok: false, notes }
     }
 
-    // False start: never became busy and never reached target.
+    // False start: never became busy, version still unknown / unsettled.
     if (!sawBusy && idleFor >= falseStartTimeoutMs) {
       notes.push(
         `Steam never started installing version ${input.versionLabel} after ${formatElapsed(idleFor)} idle (last: ${status.detail}, BetaKey=${status.betaKey || '(none)'}, version=${detected}).`,
