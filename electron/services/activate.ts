@@ -31,21 +31,17 @@ import { deployProfileVault, importModulesIntoVault } from './vault'
 
 export type ActivateProgressReporter = (event: ActivateProgressEvent) => void
 
-function versionMismatch(
-  profile: ModProfile,
-  detected: string | null,
-  currentBeta: string | null,
-): boolean {
-  const desiredBeta = resolveDesiredBetaKey(profile.gameVersion, profile.steamBetaBranch)
-  if (desiredBeta && currentBeta) {
-    return desiredBeta.toLowerCase() !== currentBeta.toLowerCase()
-  }
-  if (desiredBeta && !currentBeta) {
-    return true
-  }
-  if (!profile.gameVersion || profile.gameVersion === 'unknown') return false
-  if (!detected) return Boolean(desiredBeta)
-  return !compareLooseVersion(detected, profile.gameVersion)
+/**
+ * True only when the installed game version (Native SubModule / package_info)
+ * differs from the profile target. BetaKey alone must never force Steam
+ * validate — public/beta often disagree with the desired key while the
+ * on-disk build already matches.
+ */
+function versionMismatch(profile: ModProfile, detected: string | null): boolean {
+  const target = (profile.gameVersion || '').trim()
+  if (!target || target === 'unknown' || target === 'public') return false
+  if (!detected) return false
+  return !compareLooseVersion(detected, target)
 }
 
 function report(
@@ -85,13 +81,10 @@ export async function activateProfile(
     throw new Error('Modules path unknown. Set the game install path.')
   }
 
-  const mismatch = versionMismatch(
-    profile,
-    discovery.detectedGameVersion,
-    discovery.steamBetaBranch,
-  )
+  const mismatch = versionMismatch(profile, discovery.detectedGameVersion)
 
-  // Gate only — no lock, no disk mutation.
+  // Gate only — no lock, no disk mutation. Steam is only engaged on a real
+  // installed-version mismatch (local Native/package_info), never for BetaKey alone.
   if (mismatch && !options.confirmVersionSwitch) {
     return {
       ok: false,
@@ -99,7 +92,7 @@ export async function activateProfile(
       backupPath: null,
       launcherDataPath: discovery.launcherDataPath,
       versionNotes: [
-        `This profile requires Bannerlord ${profile.gameVersion}; install currently reports ${discovery.detectedGameVersion ?? 'unknown'}.`,
+        `This profile requires Bannerlord ${profile.gameVersion}; install currently reports ${discovery.detectedGameVersion ?? 'unknown'} (from Native/package_info).`,
       ],
       warnings: [],
       vaultNotes: [],
@@ -207,9 +200,10 @@ export async function activateProfile(
     } else if (!mismatch) {
       versionNotes.push(
         discovery.detectedGameVersion
-          ? `Game version matches profile (${discovery.detectedGameVersion}).`
-          : 'No game version detected; proceeding with vault + launcher deploy.',
+          ? `Installed version matches profile (${discovery.detectedGameVersion} via Native/package_info); skipped Steam BetaKey/validate.`
+          : 'No local game version detected; skipped Steam and proceeding with vault + launcher deploy.',
       )
+      // Do not trigger Steam. Only block if Steam is already mid-update.
       const busy = getSteamBusyStatus(storeLive.gameInstallPath)
       if (busy.busy) {
         throw new Error(
