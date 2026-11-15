@@ -322,6 +322,8 @@ export interface LaunchResult {
 export const OFFICIAL_MODULE_IDS = [
   'Native',
   'SandBoxCore',
+  /** Bannerlord's on-disk folder is SandBox (capital B). */
+  'SandBox',
   'Sandbox',
   'StoryMode',
   'CustomBattle',

@@ -15,7 +15,7 @@ const xmlParser = new XMLParser({
   textNodeName: '#text',
 })
 
-const OFFICIAL = new Set<string>(OFFICIAL_MODULE_IDS)
+const OFFICIAL = new Set<string>(OFFICIAL_MODULE_IDS.map((id) => id.toLowerCase()))
 
 function textOf(node: unknown): string {
   if (node == null) return ''
@@ -72,7 +72,7 @@ export function discoverMods(modulesDir: string): DiscoveredMod[] {
       name: meta.name,
       version: meta.version,
       path: path.join(modulesDir, folder),
-      official: OFFICIAL.has(meta.id) || OFFICIAL.has(folder),
+      official: OFFICIAL.has(meta.id.toLowerCase()) || OFFICIAL.has(folder.toLowerCase()),
     })
   }
 

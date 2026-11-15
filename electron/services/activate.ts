@@ -13,7 +13,11 @@ import {
   assertOperationAllowed,
 } from './activateLock'
 import { discoverGame } from './discovery'
-import { backupLauncherData, writeLauncherData } from './launcherData'
+import {
+  backupLauncherData,
+  buildActivateLauncherMods,
+  writeLauncherData,
+} from './launcherData'
 import { getBackupsPath } from './paths'
 import { createProfile, loadStore, saveStore } from './profiles'
 import {
@@ -265,7 +269,15 @@ export async function activateProfile(
       )
     }
 
-    writeLauncherData(discovery.launcherDataPath, profileLive.mods)
+    // Official modules on disk + profile community mods; force singleplayer list.
+    const launcherMods = buildActivateLauncherMods(
+      profileLive.mods,
+      discovery.modulesPath,
+    )
+    writeLauncherData(discovery.launcherDataPath, launcherMods)
+    vaultNotes.push(
+      `Wrote LauncherData.xml (Singleplayer) with ${launcherMods.length} module(s), including official modules present under Modules.`,
+    )
 
     if (discovery.documentsPath) {
       const mirrorDir = path.join(
@@ -281,12 +293,21 @@ export async function activateProfile(
       )
     }
 
-    storeLive.activeProfileId = profileLive.id
-    storeLive.lastActivatedAt = new Date().toISOString()
-    storeLive.lastActivationNotes = [...versionNotes, ...vaultNotes, ...warnings]
-    const target = storeLive.profiles.find((p) => p.id === profileLive.id)
-    if (target) target.dirty = false
-    saveStore(storeLive)
+    // Re-load so we clear dirty on the latest profile row (UI "Unsaved" badge).
+    const storeAfter = loadStore()
+    storeAfter.activeProfileId = profileLive.id
+    storeAfter.lastActivatedAt = new Date().toISOString()
+    storeAfter.lastActivationNotes = [...versionNotes, ...vaultNotes, ...warnings]
+    const target = storeAfter.profiles.find((p) => p.id === profileLive.id)
+    if (target) {
+      target.dirty = false
+      target.updatedAt = new Date().toISOString()
+    }
+    saveStore(storeAfter)
+    // Keep local alias in sync for return payload.
+    storeLive.activeProfileId = storeAfter.activeProfileId
+    storeLive.lastActivatedAt = storeAfter.lastActivatedAt
+    storeLive.lastActivationNotes = storeAfter.lastActivationNotes
 
     report(onProgress, {
       phase: 'done',

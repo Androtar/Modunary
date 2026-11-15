@@ -262,6 +262,10 @@ export function updateProfile(
     profile.settings = { ...profile.settings, ...patch.settings }
   }
   profile.updatedAt = nowIso()
+  // Settings/version saves from the UI are intentional persists — clear Unsaved.
+  if (patch.gameVersion != null || patch.steamBetaBranch != null || patch.settings != null) {
+    if (patch.mods == null) profile.dirty = false
+  }
   saveStore(store)
   return profile
 }

@@ -8,12 +8,14 @@ import { ensureAppDirs, getVaultPath } from './paths'
 import { assertEnoughSpace } from './vaultMigrate'
 
 const execFileAsync = promisify(execFile)
-const OFFICIAL = new Set<string>(OFFICIAL_MODULE_IDS)
+const OFFICIAL = new Set<string>(
+  OFFICIAL_MODULE_IDS.map((id) => id.toLowerCase()),
+)
 
 export type VaultProgress = (message: string) => void
 
 export function isOfficialModule(idOrFolder: string): boolean {
-  return OFFICIAL.has(idOrFolder)
+  return OFFICIAL.has(idOrFolder.trim().toLowerCase())
 }
 
 export function vaultModulePath(folderName: string): string {
@@ -343,6 +345,51 @@ export interface VaultDeployResult {
   notes: string[]
 }
 
+async function junctionTarget(linkPath: string): Promise<string | null> {
+  try {
+    if (!(await isJunctionOrSymlink(linkPath))) return null
+    return await fsp.readlink(linkPath)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Restore official modules that were wrongly parked into the vault
+ * (e.g. SandBox when casing did not match OFFICIAL_MODULE_IDS).
+ * Prefer a real directory copy for official modules (Steam owns them).
+ */
+async function restoreOfficialFromVault(
+  modulesDir: string,
+  onProgress?: VaultProgress,
+): Promise<string[]> {
+  const restored: string[] = []
+  // Prefer canonical Bannerlord folder names.
+  const candidates = ['SandBox', 'SandBoxCore', 'Native', 'StoryMode', 'CustomBattle', 'BirthAndDeath']
+  for (const folder of candidates) {
+    if (!isOfficialModule(folder)) continue
+    const dest = path.join(modulesDir, folder)
+    const vaultDir = vaultModulePath(folder)
+    if (fs.existsSync(dest)) continue
+    if (!fs.existsSync(vaultDir)) continue
+    onProgress?.(`Restoring official module ${folder} from vault…`)
+    try {
+      await copyDir(vaultDir, dest, onProgress, folder)
+      restored.push(folder)
+    } catch (err) {
+      // Fall back to junction if copy fails (still better than missing SandBox).
+      try {
+        await createJunction(dest, vaultDir)
+        restored.push(folder)
+      } catch {
+        throw err
+      }
+    }
+    await yieldEventLoop()
+  }
+  return restored
+}
+
 export async function deployProfileVault(
   modulesDir: string,
   profile: ModProfile,
@@ -372,6 +419,23 @@ export async function deployProfileVault(
   )
 
   notes.push(`Vault modules path: ${getVaultPath()}`)
+
+  try {
+    const restored = await restoreOfficialFromVault(modulesDir, onProgress)
+    if (restored.length) {
+      notes.push(`Restored official module(s) from vault: ${restored.join(', ')}.`)
+    }
+  } catch (err) {
+    warnings.push(
+      `Official module restore failed: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  if (!fs.existsSync(path.join(modulesDir, 'SandBox'))) {
+    warnings.push(
+      'Official SandBox module is missing from Modules. Singleplayer will not work until it is restored (Activate will try vault restore; otherwise run Steam verify).',
+    )
+  }
 
   const existing = await fsp.readdir(modulesDir, { withFileTypes: true })
   let vortexStyle = 0
@@ -433,15 +497,30 @@ export async function deployProfileVault(
         warnings.push(`Profile wants "${folder}" but it is not in the vault or Modules.`)
         continue
       }
-      if (!fs.existsSync(dest)) {
+
+      const needsDeploy = async (): Promise<boolean> => {
+        if (!fs.existsSync(dest)) return true
+        if (await isJunctionOrSymlink(dest)) {
+          const target = await junctionTarget(dest)
+          const normVault = path.resolve(vaultDir).toLowerCase()
+          const normTarget = target ? path.resolve(target).toLowerCase() : ''
+          if (normTarget && normTarget !== normVault) return true
+          // Junction already points at vault — good.
+          return false
+        }
+        if (await treeHasSymlinks(dest)) return true
+        // Real directory with SubModule already present — leave alone.
+        return !fs.existsSync(path.join(dest, 'SubModule.xml'))
+      }
+
+      if (await needsDeploy()) {
+        if (fs.existsSync(dest)) await rmrf(dest)
         onProgress?.(`Deploying ${folder}…`)
         await deployFromVault(modulesDir, folder, mode, onProgress)
-      } else if (
-        !(await isJunctionOrSymlink(dest)) &&
-        (await treeHasSymlinks(dest))
-      ) {
-        await rmrf(dest)
-        await deployFromVault(modulesDir, folder, mode, onProgress)
+      }
+      if (!fs.existsSync(dest)) {
+        warnings.push(`Deploy failed for "${folder}": not present under Modules after deploy.`)
+        continue
       }
       deployed.push(folder)
     } catch (err) {

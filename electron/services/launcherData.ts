@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { XMLBuilder, XMLParser } from 'fast-xml-parser'
 import type { ModEntry } from '../types'
+import { OFFICIAL_MODULE_IDS } from '../types'
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -62,8 +63,64 @@ export function modsFromLauncherData(
   })
 }
 
-function buildMinimalDocument(mods: ModEntry[]) {
+/** Official load order for singleplayer (Multiplayer omitted). */
+const SP_OFFICIAL_ORDER = [
+  'Native',
+  'SandBoxCore',
+  'SandBox',
+  'Sandbox',
+  'StoryMode',
+  'CustomBattle',
+  'BirthAndDeath',
+] as const
+
+/**
+ * Merge official Modules present on disk ahead of profile community mods so the
+ * Bannerlord launcher always has Native/SandBox/etc. selected for singleplayer.
+ */
+export function buildActivateLauncherMods(
+  profileMods: ModEntry[],
+  modulesDir: string | null,
+): ModEntry[] {
+  const official: ModEntry[] = []
+  const seen = new Set<string>()
+  if (modulesDir && fs.existsSync(modulesDir)) {
+    for (const id of SP_OFFICIAL_ORDER) {
+      const folder = path.join(modulesDir, id)
+      if (!fs.existsSync(folder)) continue
+      const key = id.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      official.push({
+        id,
+        folderName: id,
+        name: id,
+        version: '0.0.0',
+        enabled: true,
+        order: official.length,
+      })
+    }
+  }
+
+  const community = [...profileMods]
+    .filter((m) => !OFFICIAL_MODULE_IDS.map((x) => x.toLowerCase()).includes(m.id.toLowerCase()))
+    .filter((m) => !seen.has(m.folderName.toLowerCase()))
+    .sort((a, b) => a.order - b.order)
+    .map((m, i) => ({ ...m, order: official.length + i }))
+
+  return [...official, ...community]
+}
+
+function toUserModData(mods: ModEntry[]) {
   const ordered = [...mods].sort((a, b) => a.order - b.order)
+  return ordered.map((m) => ({
+    Id: m.id,
+    LastKnownVersion: m.version.startsWith('v') ? m.version : `v${m.version}`,
+    IsSelected: m.enabled ? 'true' : 'false',
+  }))
+}
+
+function buildMinimalDocument(mods: ModEntry[]) {
   return {
     UserData: {
       '@_xmlns:xsd': 'http://www.w3.org/2001/XMLSchema',
@@ -71,11 +128,7 @@ function buildMinimalDocument(mods: ModEntry[]) {
       GameType: 'Singleplayer',
       SingleplayerData: {
         ModDatas: {
-          UserModData: ordered.map((m) => ({
-            Id: m.id,
-            LastKnownVersion: m.version.startsWith('v') ? m.version : `v${m.version}`,
-            IsSelected: m.enabled ? 'true' : 'false',
-          })),
+          UserModData: toUserModData(mods),
         },
       },
       MultiplayerData: {
@@ -86,19 +139,17 @@ function buildMinimalDocument(mods: ModEntry[]) {
 }
 
 /**
- * Safely write launcher mod selection/order.
- * If an existing LauncherData.xml is present, preserve sibling sections
- * (DLL checks, multiplayer data, etc.) and only replace ModDatas.
+ * Write launcher mod selection/order for singleplayer Activate.
+ * Always forces GameType=Singleplayer — leaving Multiplayer makes the vanilla
+ * launcher show only Native/Multiplayer.
  */
 export function writeLauncherData(filePath: string, mods: ModEntry[]): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
 
-  const ordered = [...mods].sort((a, b) => a.order - b.order)
-  const userModData = ordered.map((m) => ({
-    Id: m.id,
-    LastKnownVersion: m.version.startsWith('v') ? m.version : `v${m.version}`,
-    IsSelected: m.enabled ? 'true' : 'false',
-  }))
+  const userModData = toUserModData(mods)
+  if (userModData.length === 0) {
+    throw new Error('Refusing to write LauncherData.xml with zero modules.')
+  }
 
   let doc: Record<string, unknown>
   if (fs.existsSync(filePath)) {
@@ -108,7 +159,8 @@ export function writeLauncherData(filePath: string, mods: ModEntry[]): void {
       const single = (userData.SingleplayerData ?? {}) as Record<string, unknown>
       single.ModDatas = { UserModData: userModData }
       userData.SingleplayerData = single
-      if (!userData.GameType) userData.GameType = 'Singleplayer'
+      // Critical: never leave GameType=Multiplayer after a profile Activate.
+      userData.GameType = 'Singleplayer'
       doc.UserData = userData
     } catch {
       doc = buildMinimalDocument(mods)
